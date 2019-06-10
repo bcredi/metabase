@@ -17,6 +17,7 @@ moment.updateLocale('en',{
 
 
 import colors from "metabase/lib/colors";
+
 import * as Urls from "metabase/lib/urls";
 
 import AdminPaneLayout from "metabase/components/AdminPaneLayout.jsx";
