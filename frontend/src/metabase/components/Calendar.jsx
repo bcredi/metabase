@@ -121,7 +121,7 @@ export default class Calendar extends Component {
   }
 
   renderDayNames() {
-    const names = [t`Su`, t`Mo`, t`Tu`, t`We`, t`Th`, t`Fr`, t`Sa`];
+    const names = [t`Mo`, t`Tu`, t`We`, t`Th`, t`Fr`, t`Sa`, t`Su`];
     return (
       <div className="Calendar-day-names Calendar-week py1">
         {names.map(name => (
