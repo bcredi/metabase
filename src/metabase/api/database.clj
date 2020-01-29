@@ -31,7 +31,7 @@
              [sync-metadata :as sync-metadata]]
             [metabase.util
              [cron :as cron-util]
-             [i18n :refer [tru]]
+             [i18n :refer [deferred-tru]]
              [schema :as su]]
             [schema.core :as s]
             [toucan
@@ -45,7 +45,7 @@
                               su/NonBlankString
                               #(u/ignore-exceptions (driver/the-driver %))
                               "Valid database engine")
-    (tru "value must be a valid database engine.")))
+    (deferred-tru "value must be a valid database engine.")))
 
 
 ;;; ----------------------------------------------- GET /api/database ------------------------------------------------
@@ -94,9 +94,10 @@
    would be ambiguous. Too many things break when attempting to use a query like this. In the future, this may be
    supported, but it will likely require rewriting the source SQL query to add appropriate aliases (this is even
    trickier if the source query uses `SELECT *`)."
-  [{result-metadata :result_metadata}]
-  (some (partial re-find #"_2$")
-        (map (comp name :name) result-metadata)))
+  [{result-metadata :result_metadata, dataset-query :dataset_query}]
+  (and (= (:type dataset-query) :native)
+       (some (partial re-find #"_2$")
+             (map (comp name :name) result-metadata))))
 
 (defn- card-uses-unnestable-aggregation?
   "Since cumulative count and cumulative sum aggregations are done in Clojure-land we can't use Cards that
@@ -378,18 +379,20 @@
 
 (api/defendpoint POST "/"
   "Add a new `Database`."
-  [:as {{:keys [name engine details is_full_sync is_on_demand schedules]} :body}]
-  {name         su/NonBlankString
-   engine       DBEngineString
-   details      su/Map
-   is_full_sync (s/maybe s/Bool)
-   is_on_demand (s/maybe s/Bool)
-   schedules    (s/maybe ExpandedSchedulesMap)}
+  [:as {{:keys [name engine details is_full_sync is_on_demand schedules auto_run_queries]} :body}]
+  {name             su/NonBlankString
+   engine           DBEngineString
+   details          su/Map
+   is_full_sync     (s/maybe s/Bool)
+   is_on_demand     (s/maybe s/Bool)
+   schedules        (s/maybe ExpandedSchedulesMap)
+   auto_run_queries (s/maybe s/Bool)}
   (api/check-superuser)
   (let [is-full-sync?    (or (nil? is_full_sync)
                              (boolean is_full_sync))
-        details-or-error (test-connection-details engine details)]
-    (if-not (false? (:valid details-or-error))
+        details-or-error (test-connection-details engine details)
+        valid?           (not= (:valid details-or-error) false)]
+    (if valid?
       ;; no error, proceed with creation. If record is inserted successfuly, publish a `:database-create` event.
       ;; Throw a 500 if nothing is inserted
       (u/prog1 (api/check-500 (db/insert! Database
@@ -400,7 +403,9 @@
                                   :is_full_sync is-full-sync?
                                   :is_on_demand (boolean is_on_demand)}
                                  (when schedules
-                                   (schedule-map->cron-strings schedules)))))
+                                   (schedule-map->cron-strings schedules))
+                                 (when (some? auto_run_queries)
+                                   {:auto_run_queries auto_run_queries}))))
         (events/publish-event! :database-create <>))
       ;; failed to connect, return error
       {:status 400
@@ -431,14 +436,16 @@
 
 (api/defendpoint PUT "/:id"
   "Update a `Database`."
-  [id :as {{:keys [name engine details is_full_sync is_on_demand description caveats points_of_interest schedules]} :body}]
+  [id :as {{:keys [name engine details is_full_sync is_on_demand description caveats points_of_interest schedules
+                   auto_run_queries]} :body}]
   {name               (s/maybe su/NonBlankString)
    engine             (s/maybe DBEngineString)
    details            (s/maybe su/Map)
    schedules          (s/maybe ExpandedSchedulesMap)
    description        (s/maybe s/Str)                ; s/Str instead of su/NonBlankString because we don't care
    caveats            (s/maybe s/Str)                ; whether someone sets these to blank strings
-   points_of_interest (s/maybe s/Str)}
+   points_of_interest (s/maybe s/Str)
+   auto_run_queries   (s/maybe s/Bool)}
   (api/check-superuser)
   (api/let-404 [database (Database id)]
     (let [details    (if-not (= protected-password (:password details))
@@ -465,7 +472,8 @@
                              :is_on_demand       (boolean is_on_demand)
                              :description        description
                              :caveats            caveats
-                             :points_of_interest points_of_interest}
+                             :points_of_interest points_of_interest
+                             :auto_run_queries   auto_run_queries}
                             (when schedules
                               (schedule-map->cron-strings schedules)))))
           (let [db (Database id)]

@@ -14,9 +14,9 @@ moment.updateLocale('en',{
 });
 import { datasetContainsNoResults } from "metabase/lib/dataset";
 import { formatValue } from "metabase/lib/formatting";
-import { parseTimestamp } from "metabase/lib/time";
 
 import { computeTimeseriesTicksInterval } from "./timeseries";
+import timeseriesScale from "./timeseriesScale";
 import { isMultipleOf, getModuloScaleFactor } from "./numeric";
 import { getFriendlyName } from "./utils";
 import { isHistogram } from "./renderer_utils";
@@ -56,7 +56,7 @@ function averageStringLengthOfValues(values) {
   values = values.slice(0, MAX_VALUES_TO_MEASURE);
 
   let totalLength = 0;
-  for (let value of values) {
+  for (const value of values) {
     totalLength += String(value).length;
   }
 
@@ -103,11 +103,8 @@ export function applyChartTimeseriesXAxis(
   // setup an x-axis where the dimension is a timeseries
   let dimensionColumn = firstSeries.data.cols[0];
 
-  // get the data's timezone offset from the first row
-  let dataOffset = parseTimestamp(firstSeries.data.rows[0][0]).utcOffset() / 60;
-
   // compute the data interval
-  let dataInterval = xInterval;
+  const dataInterval = xInterval;
   let tickInterval = dataInterval;
 
   if (chart.settings["graph.x_axis.labels_enabled"]) {
@@ -126,8 +123,12 @@ export function applyChartTimeseriesXAxis(
       dimensionColumn = { ...dimensionColumn, unit: dataInterval.interval };
     }
 
+    // extract xInterval timezone for updating tickInterval
+    const { timezone } = tickInterval;
+
     // special handling for weeks
     // TODO: are there any other cases where we should do this?
+    let tickFormatUnit = dimensionColumn.unit;
     if (dataInterval.interval === "week") {
       // if tick interval is compressed then show months instead of weeks because they're nicer formatted
       const newTickInterval = computeTimeseriesTicksInterval(
@@ -139,40 +140,35 @@ export function applyChartTimeseriesXAxis(
         newTickInterval.interval !== tickInterval.interval ||
         newTickInterval.count !== tickInterval.count
       ) {
-        (dimensionColumn = { ...dimensionColumn, unit: "month" }),
-          (tickInterval = { interval: "month", count: 1 });
+        tickFormatUnit = "month";
+        tickInterval = { interval: "month", count: 1, timezone };
       }
     }
 
     chart.xAxis().tickFormat(timestamp => {
-      // timestamp is a plain Date object which discards the timezone,
-      // so add it back in so it's formatted correctly
-      const timestampFixed = moment(timestamp)
-        .utcOffset(dataOffset)
-        .format();
-      return formatValue(timestampFixed, {
-        ...chart.settings.column(dimensionColumn),
+      const { column, ...columnSettings } = chart.settings.column(
+        dimensionColumn,
+      );
+      return formatValue(timestamp, {
+        ...columnSettings,
+        column: { ...column, unit: tickFormatUnit },
         type: "axis",
         compact: chart.settings["graph.x_axis.axis_enabled"] === "compact",
       });
     });
 
     // Compute a sane interval to display based on the data granularity, domain, and chart width
-    tickInterval = computeTimeseriesTicksInterval(
-      xDomain,
-      tickInterval,
-      chart.width(),
-    );
-    chart.xAxis().ticks(tickInterval.rangeFn, tickInterval.count);
-  } else {
-    chart.xAxis().ticks(0);
+    tickInterval = {
+      ...computeTimeseriesTicksInterval(xDomain, tickInterval, chart.width()),
+      timezone,
+    };
   }
 
   // pad the domain slightly to prevent clipping
   xDomain = stretchTimeseriesDomain(xDomain, dataInterval);
 
   // set the x scale
-  chart.x(d3.time.scale.utc().domain(xDomain)); //.nice(d3.time[dataInterval.interval]));
+  chart.x(timeseriesScale(tickInterval).domain(xDomain));
 
   // set the x units (used to compute bar size)
   chart.xUnits((start, stop) =>
@@ -323,6 +319,17 @@ export function applyChartOrdinalXAxis(
   chart.x(d3.scale.ordinal().domain(xValues)).xUnits(dc.units.ordinal);
 }
 
+// Sometimes tick marks are placed *just* off from zero.
+// We still want to format these as "0" rather than "0.0000000000000018".
+// But! We need to allow for real non-zero ticks at very small values,
+// so we scale a tolerance to the extent of the yAxis.
+// The tolerance is arbitrarily set to one millionth of the yExtent.
+const TOLERANCE_TO_Y_EXTENT = 1e6;
+export function maybeRoundValueToZero(value, [yMin, yMax]) {
+  const tolerance = Math.abs(yMax - yMin) / TOLERANCE_TO_Y_EXTENT;
+  return Math.abs(value) < tolerance ? 0 : value;
+}
+
 export function applyChartYAxis(chart, series, yExtent, axisName) {
   let axis;
   if (axisName !== "right") {
@@ -357,19 +364,7 @@ export function applyChartYAxis(chart, series, yExtent, axisName) {
   }
 
   if (axis.setting("axis_enabled")) {
-    // special case for normalized stacked charts
-    // for normalized stacked charts the y-axis is a percentage number. In Javascript, 0.07 * 100.0 = 7.000000000000001 (try it) so we
-    // round that number to get something nice like "7". Then we append "%" to get a nice tick like "7%"
-    if (chart.settings["stackable.stack_type"] === "normalized") {
-      axis.axis().tickFormat(value => Math.round(value * 100) + "%");
-    } else {
-      let metricColumn = series[0].data.cols[1];
-      axis
-        .axis()
-        .tickFormat(value =>
-          formatValue(value, chart.settings.column(metricColumn)),
-        );
-    }
+    axis.axis().tickFormat(getYValueFormatter(chart, series, yExtent));
     chart.renderHorizontalGridLines(true);
     adjustYAxisTicksIfNeeded(axis.axis(), chart.height());
   } else {
@@ -386,33 +381,61 @@ export function applyChartYAxis(chart, series, yExtent, axisName) {
     scale = d3.scale.linear();
   }
 
+  scale.clamp(true);
+
   if (axis.setting("auto_range")) {
     // elasticY not compatible with log scale
     if (axis.setting("scale") !== "log") {
       // TODO: right axis?
       chart.elasticY(true);
     } else {
-      if (
-        !(
-          (yExtent[0] < 0 && yExtent[1] < 0) ||
-          (yExtent[0] > 0 && yExtent[1] > 0)
-        )
-      ) {
+      const [min, max] = yExtent;
+      if (!((min < 0 && max < 0) || (min > 0 && max > 0))) {
         throw "Y-axis must not cross 0 when using log scale.";
       }
-      scale.domain(yExtent);
+
+      // With chart.elasticY, the y axis adjusts to show the beginning of the
+      // bars. If there are any bar series, we try to do the same with the log
+      // scale. We start at ±1 because things get wacky in (0, ±1].
+      const noBarSeries = series.every(s => s.card.display !== "bar");
+      if (noBarSeries) {
+        scale.domain([min, max]);
+      } else if (min < 0) {
+        scale.domain([min, -1]);
+      } else {
+        scale.domain([1, max]);
+      }
     }
     axis.scale(scale);
   } else {
+    // We union data's yExtent with the range specified in the chart settings
+    // This avoids rendering issues with bars and lines overflowing the c
+    const [min, max] = d3.extent([
+      axis.setting("min"),
+      axis.setting("max"),
+      ...yExtent,
+    ]);
     if (
       axis.setting("scale") === "log" &&
-      !(
-        (axis.setting("min") < 0 && axis.setting("max") < 0) ||
-        (axis.setting("min") > 0 && axis.setting("max") > 0)
-      )
+      !((min < 0 && max < 0) || (min > 0 && max > 0))
     ) {
       throw "Y-axis must not cross 0 when using log scale.";
     }
-    axis.scale(scale.domain([axis.setting("min"), axis.setting("max")]));
+    axis.scale(scale.domain([min, max]));
   }
+}
+
+export function getYValueFormatter(chart, series, yExtent) {
+  // special case for normalized stacked charts
+  // for normalized stacked charts the y-axis is a percentage number. In Javascript, 0.07 * 100.0 = 7.000000000000001 (try it) so we
+  // round that number to get something nice like "7". Then we append "%" to get a nice tick like "7%"
+  if (chart.settings["stackable.stack_type"] === "normalized") {
+    return value => Math.round(value * 100) + "%";
+  }
+  const metricColumn = series[0].data.cols[1];
+  const columnSettings = chart.settings.column(metricColumn);
+  return (value, options) => {
+    const roundedValue = maybeRoundValueToZero(value, yExtent);
+    return formatValue(roundedValue, { ...columnSettings, ...options });
+  };
 }

@@ -3,9 +3,11 @@
             [clojure.string :as str]
             [honeysql
              [core :as hsql]
-             [format :as hformat]
-             [helpers :as h]]
-            [metabase.driver.hive-like :as hive-like]
+             [format :as hformat]]
+            [metabase
+             [config :as config]
+             [driver :as driver]
+             [util :as u]]
             [metabase.driver.sql
              [query-processor :as sql.qp]
              [util :as sql.u]]
@@ -14,24 +16,25 @@
              [interface :as tx]
              [sql :as sql.tx]
              [sql-jdbc :as sql-jdbc.tx]]
-            [metabase.test.data.sql.ddl :as ddl]
             [metabase.test.data.sql-jdbc
              [execute :as execute]
-             [load-data :as load-data]
-             [spec :as spec]]
-            [metabase.util :as u]
-            [metabase.util.honeysql-extensions :as hx]))
+             [load-data :as load-data]]
+            [metabase.test.data.sql.ddl :as ddl]))
 
 (sql-jdbc.tx/add-test-extensions! :sparksql)
 
-(defmethod sql.tx/field-base-type->sql-type [:sparksql :type/BigInteger] [_ _] "BIGINT")
-(defmethod sql.tx/field-base-type->sql-type [:sparksql :type/Boolean]    [_ _] "BOOLEAN")
-(defmethod sql.tx/field-base-type->sql-type [:sparksql :type/Date]       [_ _] "DATE")
-(defmethod sql.tx/field-base-type->sql-type [:sparksql :type/DateTime]   [_ _] "TIMESTAMP")
-(defmethod sql.tx/field-base-type->sql-type [:sparksql :type/Decimal]    [_ _] "DECIMAL")
-(defmethod sql.tx/field-base-type->sql-type [:sparksql :type/Float]      [_ _] "DOUBLE")
-(defmethod sql.tx/field-base-type->sql-type [:sparksql :type/Integer]    [_ _] "INTEGER")
-(defmethod sql.tx/field-base-type->sql-type [:sparksql :type/Text]       [_ _] "STRING")
+;; during unit tests don't treat Spark SQL as having FK support
+(defmethod driver/supports? [:sparksql :foreign-keys] [_ _] (not config/is-test?))
+
+(doseq [[base-type database-type] {:type/BigInteger "BIGINT"
+                                   :type/Boolean    "BOOLEAN"
+                                   :type/Date       "DATE"
+                                   :type/DateTime   "TIMESTAMP"
+                                   :type/Decimal    "DECIMAL"
+                                   :type/Float      "DOUBLE"
+                                   :type/Integer    "INTEGER"
+                                   :type/Text       "STRING"}]
+  (defmethod sql.tx/field-base-type->sql-type [:sparksql base-type] [_ _] database-type))
 
 ;; If someone tries to run Time column tests with SparkSQL give them a heads up that SparkSQL does not support it
 (defmethod sql.tx/field-base-type->sql-type [:sparksql :type/Time] [_ _]
@@ -43,7 +46,7 @@
 
 (defmethod sql.tx/qualified-name-components :sparksql
   [driver & args]
-  [(tx/format-name driver (u/keyword->qualified-name (last args)))])
+  [(tx/format-name driver (u/qualified-name (last args)))])
 
 (defmethod tx/dbdef->connection-details :sparksql
   [driver context {:keys [database-name]}]

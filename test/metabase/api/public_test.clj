@@ -1,10 +1,12 @@
 (ns metabase.api.public-test
   "Tests for `api/public/` (public links) endpoints."
   (:require [cheshire.core :as json]
+            [clojure
+             [string :as str]
+             [test :refer :all]]
             [dk.ative.docjure.spreadsheet :as spreadsheet]
-            [expectations :refer :all]
+            [expectations :refer [expect]]
             [metabase
-             [config :as config]
              [http-client :as http]
              [query-processor-test :as qp.test]
              [util :as u]]
@@ -166,14 +168,14 @@
 
 ;; Check that we can exec a PublicCard and get results as CSV
 (expect
-  "count\n100\n"
+  "Count\n100\n"
   (tu/with-temporary-setting-values [enable-public-sharing true]
     (with-temp-public-card [{uuid :public_uuid}]
       (http/client :get 200 (str "public/card/" uuid "/query/csv"), :format :csv))))
 
 ;; Check that we can exec a PublicCard and get results as XLSX
 (expect
-  [{:col "count"} {:col 100.0}]
+  [{:col "Count"} {:col 100.0}]
   (tu/with-temporary-setting-values [enable-public-sharing true]
     (with-temp-public-card [{uuid :public_uuid}]
       (->> (http/client :get 200 (str "public/card/" uuid "/query/xlsx") {:request-options {:as :byte-array}})
@@ -190,6 +192,41 @@
       (get-in (http/client :get 200 (str "public/card/" uuid "/query")
                            :parameters (json/encode [{:name "Venue ID", :slug "venue_id", :type "id", :value 2}]))
               [:json_query :parameters]))))
+
+;; Cards with required params
+(defn- do-with-required-param-card [f]
+  (tu/with-temporary-setting-values [enable-public-sharing true]
+    (with-temp-public-card [{uuid :public_uuid}
+                            {:dataset_query
+                             {:database (data/id)
+                              :type     :native
+                              :native   {:query         "SELECT count(*) FROM venues v WHERE price = {{price}}"
+                                         :template-tags {"price" {:name         "price"
+                                                                  :display-name "Price"
+                                                                  :type         :number
+                                                                  :required     true}}}}}]
+      (f uuid))))
+
+;; should be able to run a Card with a required param
+(expect
+  [[22]]
+  (do-with-required-param-card
+   (fn [uuid]
+     (qp.test/rows
+       (http/client :get 200 (str "public/card/" uuid "/query")
+                    :parameters (json/encode [{:type   "category"
+                                               :target [:variable [:template-tag "price"]]
+                                               :value  1}]))))))
+
+(deftest missing-required-param-error-message-test
+  (testing (str "If you're missing a required param, the error message should get passed thru, rather than the normal "
+                "generic 'Query Failed' message that we show for most embedding errors")
+    (is (= {:status     "failed"
+            :error      "You'll need to pick a value for 'Price' before this query can run."
+            :error_type "missing-required-parameter"}
+           (do-with-required-param-card
+            (fn [uuid]
+              (http/client :get 200 (str "public/card/" uuid "/query"))))))))
 
 ;; make sure CSV (etc.) downloads take editable params into account (#6407)
 
@@ -219,11 +256,12 @@
   (tu/with-temporary-setting-values [enable-public-sharing true]
     (tt/with-temp Card [{uuid :public_uuid} (card-with-date-field-filter)]
       ;; make sure the URL doesn't include /api/ at the beginning like it normally would
-      (binding [http/*url-prefix* (str "http://localhost:" (config/config-str :mb-jetty-port) "/")]
-        (http/client :get 200 (str "public/question/" uuid ".csv")
-                     :parameters (json/encode [{:type   :date/quarter-year
-                                                :target [:dimension [:template-tag :date]]
-                                                :value  "Q1-2014"}]))))))
+      (binding [http/*url-prefix* (str/replace http/*url-prefix* #"/api/$" "/")]
+        (tu/with-temporary-setting-values [site-url http/*url-prefix*]
+          (http/client :get 200 (str "public/question/" uuid ".csv")
+                       :parameters (json/encode [{:type   :date/quarter-year
+                                                  :target [:dimension [:template-tag :date]]
+                                                  :value  "Q1-2014"}])))))))
 
 ;; make sure we include all the relevant fields like `:insights`
 (defn- card-with-trendline []
@@ -235,7 +273,7 @@
                               :aggregation  [[:count]]}}))
 
 (expect
-  #{:cols :rows :insights :columns}
+  #{:cols :rows :insights :results_timezone}
   (tu/with-temporary-setting-values [enable-public-sharing true]
     (tt/with-temp Card [{uuid :public_uuid} (card-with-trendline)]
       (-> (http/client :get 200 (str "public/card/" uuid "/query"))

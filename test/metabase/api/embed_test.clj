@@ -4,12 +4,14 @@
              [jwt :as jwt]
              [util :as buddy-util]]
             [clj-time.core :as time]
+            [clojure.data.csv :as csv]
+            [clojure.string :as str]
             [crypto.random :as crypto-random]
             [dk.ative.docjure.spreadsheet :as spreadsheet]
-            [expectations :refer :all]
+            [expectations :refer [expect]]
             [metabase
-             [config :as config]
              [http-client :as http]
+             [query-processor-test :as qp.test]
              [util :as u]]
             [metabase.api
              [embed :as embed-api]
@@ -19,6 +21,7 @@
              [dashboard :refer [Dashboard]]
              [dashboard-card :refer [DashboardCard]]
              [dashboard-card-series :refer [DashboardCardSeries]]]
+            [metabase.query-processor.middleware.constraints :as constraints]
             [metabase.test
              [data :as data]
              [util :as tu]]
@@ -70,27 +73,24 @@
 
 (defn successful-query-results
   ([]
-   {:data       {:columns  ["count"]
-                 :cols     [{:base_type    "type/Integer"
-                             :special_type "type/Number"
-                             :name         "count"
-                             :display_name "count"
-                             :source       "aggregation"}]
-                 :rows     [[100]]
-                 :insights nil}
+   {:data       {:cols             [(tu/obj->json->obj (qp.test/aggregate-col :count))]
+                 :rows             [[100]]
+                 :insights         nil
+                 :results_timezone "UTC"}
     :json_query {:parameters nil}
     :status     "completed"})
+
   ([results-format]
    (case results-format
      ""      (successful-query-results)
-     "/json" [{:count 100}]
-     "/csv"  "count\n100\n"
+     "/json" [{:Count 100}]
+     "/csv"  "Count\n100\n"
      "/xlsx" (fn [body]
                (->> (ByteArrayInputStream. body)
                     spreadsheet/load-workbook
                     (spreadsheet/select-sheet "Query result")
                     (spreadsheet/select-columns {:A :col})
-                    (= [{:col "count"} {:col 100.0}]))))))
+                    (= [{:col "Count"} {:col 100.0}]))))))
 
 (defn dissoc-id-and-name {:style/indent 0} [obj]
   (dissoc obj :id :name))
@@ -182,12 +182,11 @@
   [[response-format-binding request-options-binding] expected actual]
   `(do
      ~@(for [[response-format request-options] [[""] ["/json"] ["/csv"] ["/xlsx" {:as :byte-array}]]]
-         `(expect
-            (let [~response-format-binding         ~response-format
-                  ~(or request-options-binding '_) {:request-options ~request-options}]
-              ~expected)
-            (let [~response-format-binding         ~response-format
-                  ~(or request-options-binding '_) {:request-options ~request-options}]
+         `(let [~response-format-binding         ~response-format
+                ~(or request-options-binding '_) {:request-options ~request-options}]
+            (expect
+              ~(symbol (format "expect-for-response-formats-%s-%d" (str/join (rest response-format)) (hash [expected actual])))
+              ~expected
               ~actual)))))
 
 ;; it should be possible to run a Card successfully if you jump through the right hoops...
@@ -200,7 +199,9 @@
 ;; but if the card has an invalid query we should just get a generic "query failed" exception (rather than leaking
 ;; query info)
 (expect-for-response-formats [response-format]
-  "An error occurred while running the query."
+  (if (= response-format "")
+    {:status "failed" :error "An error occurred while running the query."}
+    "An error occurred while running the query.")
   (tu.log/suppress-output
     (with-embedding-enabled-and-new-secret-key
       (with-temp-card [card {:enable_embedding true, :dataset_query {:database (data/id)
@@ -232,6 +233,21 @@
   (with-embedding-enabled-and-new-secret-key
     (with-temp-card [card {:enable_embedding true}]
       (http/client :get 400 (with-new-secret-key (card-query-url card response-format))))))
+
+;; Downloading CSV/JSON/XLSX results shouldn't be subject to the default query constraints
+;; -- even if the query comes in with `add-default-userland-constraints` (as will be the case if the query gets saved
+;; from one that had it -- see #9831 and #10399)
+(expect
+  101
+  (with-redefs [constraints/default-query-constraints {:max-results 10, :max-results-bare-rows 10}]
+    (with-embedding-enabled-and-new-secret-key
+      (with-temp-card [card {:enable_embedding true
+                             :dataset_query    (assoc (data/mbql-query venues)
+                                                      :middleware
+                                                      {:add-default-userland-constraints? true
+                                                       :userland-query?                   true})}]
+        (let [results (http/client :get 200 (card-query-url card "/csv"))]
+          (count (csv/read-csv results)))))))
 
 
 ;;; LOCKED params
@@ -325,8 +341,9 @@
   (with-embedding-enabled-and-new-secret-key
     (tt/with-temp Card [card (card-with-date-field-filter)]
       ;; make sure the URL doesn't include /api/ at the beginning like it normally would
-      (binding [http/*url-prefix* (str "http://localhost:" (config/config-str :mb-jetty-port) "/")]
-        (http/client :get 200 (str "embed/question/" (card-token card) ".csv?date=Q1-2014"))))))
+      (binding [http/*url-prefix* (str/replace http/*url-prefix* #"/api/$" "/")]
+        (tu/with-temporary-setting-values [site-url http/*url-prefix*]
+          (http/client :get 200 (str "embed/question/" (card-token card) ".csv?date=Q1-2014")))))))
 
 
 ;;; ---------------------------------------- GET /api/embed/dashboard/:token -----------------------------------------
@@ -399,16 +416,29 @@
     (with-temp-dashcard [dashcard {:dash {:enable_embedding true}}]
       (http/client :get 200 (dashcard-url dashcard)))))
 
+;; Downloading CSV/JSON/XLSX results from the dashcard endpoint shouldn't be subject to the default query constraints
+;; (#10399)
+(expect
+  101
+  (with-redefs [constraints/default-query-constraints {:max-results 10, :max-results-bare-rows 10}]
+    (with-embedding-enabled-and-new-secret-key
+      (with-temp-dashcard [dashcard {:dash {:enable_embedding true}
+                                     :card {:dataset_query (assoc (data/mbql-query venues)
+                                                                  :middleware
+                                                                  {:add-default-userland-constraints? true
+                                                                   :userland-query?                   true})}}]
+        (let [results (http/client :get 200 (str (dashcard-url dashcard) "/csv"))]
+          (count (csv/read-csv results)))))))
+
 ;; but if the card has an invalid query we should just get a generic "query failed" exception (rather than leaking
 ;; query info)
 (expect
-  "An error occurred while running the query."
+  {:status "failed"
+   :error  "An error occurred while running the query."}
   (tu.log/suppress-output
     (with-embedding-enabled-and-new-secret-key
       (with-temp-dashcard [dashcard {:dash {:enable_embedding true}
-                                     :card {:dataset_query {:database (data/id)
-                                                            :type     :native,
-                                                            :native   {:query "SELECT * FROM XYZ"}}}}]
+                                     :card {:dataset_query (data/native-query {:query "SELECT * FROM XYZ"})}}]
         (http/client :get 200 (dashcard-url dashcard))))))
 
 ;; check that the endpoint doesn't work if embedding isn't enabled

@@ -6,10 +6,10 @@ import { t } from "ttag";
 import { parse as urlParse } from "url";
 import querystring from "querystring";
 
-import PopoverWithTrigger from "metabase/components/PopoverWithTrigger.jsx";
-import Icon from "metabase/components/Icon.jsx";
-import DownloadButton from "metabase/components/DownloadButton.jsx";
-import Tooltip from "metabase/components/Tooltip.jsx";
+import PopoverWithTrigger from "metabase/components/PopoverWithTrigger";
+import Icon from "metabase/components/Icon";
+import DownloadButton from "metabase/components/DownloadButton";
+import Tooltip from "metabase/components/Tooltip";
 
 import * as Urls from "metabase/lib/urls";
 
@@ -32,7 +32,7 @@ const QueryDownloadWidget = ({
   <PopoverWithTrigger
     triggerElement={
       <Tooltip tooltip={t`Download full results`}>
-        <Icon title={t`Download this data`} name={icon} size={16} />
+        <Icon title={t`Download this data`} name={icon} size={20} />
       </Tooltip>
     }
     triggerClasses={cx(className, "text-brand-hover")}
@@ -46,14 +46,14 @@ const QueryDownloadWidget = ({
         <h4>{t`Download full results`}</h4>
       </Box>
       {result.data != null && result.data.rows_truncated != null && (
-        <Box>
+        <Box px={1}>
           <p>{t`Your answer has a large number of rows so it could take a while to download.`}</p>
           <p>{t`The maximum download size is 1 million rows.`}</p>
         </Box>
       )}
       <Box>
         {EXPORT_FORMATS.map(type => (
-          <Box w={"100%"}>
+          <Box key={type} w={"100%"}>
             {dashcardId && token ? (
               <DashboardEmbedQueryButton
                 key={type}
@@ -154,9 +154,7 @@ const DashboardEmbedQueryButton = ({
 }) => (
   <DownloadButton
     method="GET"
-    url={`api/embed/dashboard/${token}/dashcard/${dashcardId}/card/${
-      card.id
-    }/${type}`}
+    url={`api/embed/dashboard/${token}/dashcard/${dashcardId}/card/${card.id}/${type}`}
     extensions={[type]}
     params={params}
   >
@@ -174,8 +172,11 @@ QueryDownloadWidget.propTypes = {
 
 QueryDownloadWidget.defaultProps = {
   result: {},
-  icon: "downarrow",
+  icon: "download",
   params: {},
 };
+
+QueryDownloadWidget.shouldRender = ({ result, isResultDirty }) =>
+  !isResultDirty && result && !result.error;
 
 export default QueryDownloadWidget;

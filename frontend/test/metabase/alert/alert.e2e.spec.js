@@ -5,8 +5,8 @@ import {
   forBothAdminsAndNormalUsers,
   useSharedAdminLogin,
   useSharedNormalLogin,
-} from "__support__/e2e_tests";
-import { click, clickButton } from "__support__/enzyme_utils";
+} from "__support__/e2e";
+import { click, clickButton } from "__support__/enzyme";
 
 import { fetchTableMetadata } from "metabase/redux/metadata";
 import { mount } from "enzyme";
@@ -21,10 +21,7 @@ import {
 import Question from "metabase-lib/lib/Question";
 import * as Urls from "metabase/lib/urls";
 import { INITIALIZE_QB, QUERY_COMPLETED } from "metabase/query_builder/actions";
-import QueryHeader from "metabase/query_builder/components/QueryHeader";
-import EntityMenu from "metabase/components/EntityMenu";
 import { delay } from "metabase/lib/promise";
-import Icon from "metabase/components/Icon";
 import {
   AlertEducationalScreen,
   AlertSettingToggle,
@@ -48,9 +45,8 @@ import { FETCH_PULSE_FORM_INPUT } from "metabase/pulse/actions";
 import ChannelSetupModal from "metabase/components/ChannelSetupModal";
 import { getDefaultAlert } from "metabase-lib/lib/Alert";
 import { getMetadata } from "metabase/selectors/metadata";
-import {
+import AlertListPopoverContent, {
   AlertListItem,
-  AlertListPopoverContent,
 } from "metabase/query_builder/components/AlertListPopoverContent";
 
 import Users from "metabase/entities/users";
@@ -77,17 +73,19 @@ const initQbWithAlertMenuItemClicked = async (
     FETCH_ALERTS_FOR_QUESTION,
   ]);
   await delay(500);
-
-  const actionsMenu = app.find(QueryHeader).find(EntityMenu);
-  click(actionsMenu.childAt(0));
-
-  const alertsMenuItem = actionsMenu
-    .find(Icon)
-    .filterWhere(i => i.prop("name") === "alert");
-  click(alertsMenuItem);
+  clickAlertWidget(app);
+  await delay(10);
 
   return { store, app };
 };
+
+function clickAlertWidget(app) {
+  click(app.find(".Icon-bell"));
+}
+
+function getAlertModal(app) {
+  return app.find(".test-modal");
+}
 
 describe("Alerts", () => {
   let collection = null;
@@ -112,7 +110,7 @@ describe("Alerts", () => {
     rawDataQuestion = await createSavedQuestion(
       Question.create({ databaseId: 1, tableId: 1, metadata })
         .query()
-        .addFilter(["=", ["field-id", 4], 123456])
+        .filter(["=", ["field-id", 4], 123456])
         .question()
         .setDisplayName("Just raw, untamed data")
         .setCollectionId(collection.id),
@@ -121,11 +119,11 @@ describe("Alerts", () => {
     timeSeriesQuestion = await createSavedQuestion(
       Question.create({ databaseId: 1, tableId: 1, metadata })
         .query()
-        .addAggregation(["count"])
-        .addBreakout(["datetime-field", ["field-id", 1], "month"])
+        .aggregate(["count"])
+        .breakout(["datetime-field", ["field-id", 1], "month"])
         .question()
         .setDisplay("line")
-        .setVisualizationSettings({
+        .setSettings({
           "graph.dimensions": ["CREATED_AT"],
           "graph.metrics": ["count"],
         })
@@ -136,11 +134,11 @@ describe("Alerts", () => {
     timeSeriesWithGoalQuestion = await createSavedQuestion(
       Question.create({ databaseId: 1, tableId: 1, metadata })
         .query()
-        .addAggregation(["count"])
-        .addBreakout(["datetime-field", ["field-id", 1], "month"])
+        .aggregate(["count"])
+        .breakout(["datetime-field", ["field-id", 1], "month"])
         .question()
         .setDisplay("line")
-        .setVisualizationSettings({
+        .setSettings({
           "graph.show_goal": true,
           "graph.goal_value": 10,
           "graph.dimensions": ["CREATED_AT"],
@@ -153,12 +151,12 @@ describe("Alerts", () => {
     timeMultiSeriesWithGoalQuestion = await createSavedQuestion(
       Question.create({ databaseId: 1, tableId: 1, metadata })
         .query()
-        .addAggregation(["count"])
-        .addAggregation(["sum", ["field-id", 6]])
-        .addBreakout(["datetime-field", ["field-id", 1], "month"])
+        .aggregate(["count"])
+        .aggregate(["sum", ["field-id", 6]])
+        .breakout(["datetime-field", ["field-id", 1], "month"])
         .question()
         .setDisplay("line")
-        .setVisualizationSettings({
+        .setSettings({
           "graph.show_goal": true,
           "graph.goal_value": 10,
           "graph.dimensions": ["CREATED_AT"],
@@ -171,10 +169,10 @@ describe("Alerts", () => {
     progressBarQuestion = await createSavedQuestion(
       Question.create({ databaseId: 1, tableId: 1, metadata })
         .query()
-        .addAggregation(["count"])
+        .aggregate(["count"])
         .question()
         .setDisplay("progress")
-        .setVisualizationSettings({ "progress.goal": 50 })
+        .setSettings({ "progress.goal": 50 })
         .setDisplayName("Progress bar question")
         .setCollectionId(collection.id),
     );
@@ -204,16 +202,10 @@ describe("Alerts", () => {
           FETCH_ALERTS_FOR_QUESTION,
         ]);
 
-        const actionsMenu = app.find(QueryHeader).find(EntityMenu);
-        click(actionsMenu.childAt(0));
-
-        const alertsMenuItem = actionsMenu
-          .find(Icon)
-          .filterWhere(i => i.prop("name") === "alert");
-        click(alertsMenuItem);
+        clickAlertWidget(app);
 
         await store.waitForActions([FETCH_PULSE_FORM_INPUT]);
-        const alertModal = app.find(QueryHeader).find(".test-modal");
+        const alertModal = getAlertModal(app);
         expect(alertModal.find(ChannelSetupModal).length).toBe(1);
       });
     });
@@ -249,16 +241,10 @@ describe("Alerts", () => {
         FETCH_ALERTS_FOR_QUESTION,
       ]);
 
-      const actionsMenu = app.find(QueryHeader).find(EntityMenu);
-      click(actionsMenu.childAt(0));
-
-      const alertsMenuItem = actionsMenu
-        .find(Icon)
-        .filterWhere(i => i.prop("name") === "alert");
-      click(alertsMenuItem);
+      clickAlertWidget(app);
 
       await store.waitForActions([FETCH_PULSE_FORM_INPUT]);
-      const alertModal = app.find(QueryHeader).find(".test-modal");
+      const alertModal = getAlertModal(app);
       expect(alertModal.find(ChannelSetupModal).length).toBe(0);
       expect(alertModal.find(AlertEducationalScreen).length).toBe(1);
     });
@@ -275,16 +261,10 @@ describe("Alerts", () => {
         FETCH_ALERTS_FOR_QUESTION,
       ]);
 
-      const actionsMenu = app.find(QueryHeader).find(EntityMenu);
-      click(actionsMenu.childAt(0));
-
-      const alertsMenuItem = actionsMenu
-        .find(Icon)
-        .filterWhere(i => i.prop("name") === "alert");
-      click(alertsMenuItem);
+      clickAlertWidget(app);
 
       await store.waitForActions([FETCH_PULSE_FORM_INPUT]);
-      const alertModal = app.find(QueryHeader).find(".test-modal");
+      const alertModal = getAlertModal(app);
       expect(alertModal.find(ChannelSetupModal).length).toBe(1);
       expect(alertModal.find(ChannelSetupModal).prop("channels")).toEqual([
         "email",
@@ -324,7 +304,7 @@ describe("Alerts", () => {
       );
 
       await store.waitForActions([FETCH_PULSE_FORM_INPUT]);
-      const alertModal = app.find(QueryHeader).find(".test-modal");
+      const alertModal = getAlertModal(app);
       const educationalScreen = alertModal.find(AlertEducationalScreen);
 
       clickButton(educationalScreen.find(Button));
@@ -339,7 +319,7 @@ describe("Alerts", () => {
       );
 
       await store.waitForActions([FETCH_PULSE_FORM_INPUT]);
-      const alertModal = app.find(QueryHeader).find(".test-modal");
+      const alertModal = getAlertModal(app);
       const creationScreen = alertModal.find(CreateAlertModalContent);
       expect(creationScreen.find(RawDataAlertTip).length).toBe(1);
       expect(creationScreen.find(NormalAlertTip).length).toBe(1);
@@ -356,7 +336,7 @@ describe("Alerts", () => {
       );
 
       await store.waitForActions([FETCH_PULSE_FORM_INPUT]);
-      const alertModal = app.find(QueryHeader).find(".test-modal");
+      const alertModal = getAlertModal(app);
       const creationScreen = alertModal.find(CreateAlertModalContent);
       expect(creationScreen.find(RawDataAlertTip).length).toBe(1);
       expect(creationScreen.find(AlertSettingToggle).length).toBe(0);
@@ -369,7 +349,7 @@ describe("Alerts", () => {
       );
 
       await store.waitForActions([FETCH_PULSE_FORM_INPUT]);
-      const alertModal = app.find(QueryHeader).find(".test-modal");
+      const alertModal = getAlertModal(app);
       // why sometimes the educational screen is shown for a second ...?
       expect(alertModal.find(AlertEducationalScreen).length).toBe(0);
 
@@ -402,7 +382,7 @@ describe("Alerts", () => {
       );
 
       await store.waitForActions([FETCH_PULSE_FORM_INPUT]);
-      const alertModal = app.find(QueryHeader).find(".test-modal");
+      const alertModal = getAlertModal(app);
       const creationScreen = alertModal.find(CreateAlertModalContent);
       // console.log(creationScreen.debug())
       expect(creationScreen.find(RawDataAlertTip).length).toBe(1);
@@ -535,7 +515,6 @@ describe("Alerts", () => {
         );
 
         const alertListPopover = app.find(AlertListPopoverContent);
-
         const alertListItems = alertListPopover.find(AlertListItem);
         expect(alertListItems.length).toBe(2);
         const ownAlertListItem = alertListItems.at(0);

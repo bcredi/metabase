@@ -1,7 +1,7 @@
 import React, { Component } from "react";
 
-import Icon from "metabase/components/Icon.jsx";
-import LoadingSpinner from "metabase/components/LoadingSpinner.jsx";
+import Icon from "metabase/components/Icon";
+import LoadingSpinner from "metabase/components/LoadingSpinner";
 import { t } from "ttag";
 import _ from "underscore";
 
@@ -25,7 +25,7 @@ export default class SaveStatus extends Component {
 
   setSaved() {
     clearTimeout(this.state.recentlySavedTimeout);
-    let recentlySavedTimeout = setTimeout(
+    const recentlySavedTimeout = setTimeout(
       () => this.setState({ recentlySavedTimeout: null }),
       5000,
     );

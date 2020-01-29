@@ -1,10 +1,10 @@
 import {
-  DATABASE_ID,
-  ORDERS_TABLE_ID,
+  SAMPLE_DATASET,
+  ORDERS,
   metadata,
 } from "__support__/sample_dataset_fixture";
 import Question from "metabase-lib/lib/Question";
-import { useSharedAdminLogin } from "__support__/e2e_tests";
+import { useSharedAdminLogin } from "__support__/e2e";
 import { NATIVE_QUERY_TEMPLATE } from "metabase-lib/lib/queries/NativeQuery";
 
 // TODO Atte Keinänen 6/22/17: This could include tests that run each "question drill action" (summarize etc)
@@ -20,12 +20,12 @@ describe("Question", () => {
       const templateTagName = "orderid";
       const templateTagId = "f1cb12ed3-8727-41b6-bbb4-b7ba31884c30";
       const question = Question.create({
-        databaseId: DATABASE_ID,
-        tableId: ORDERS_TABLE_ID,
+        databaseId: SAMPLE_DATASET.id,
+        tableId: ORDERS.id,
         metadata,
       }).setDatasetQuery({
         ...NATIVE_QUERY_TEMPLATE,
-        database: DATABASE_ID,
+        database: SAMPLE_DATASET.id,
         native: {
           query: `SELECT SUBTOTAL FROM ORDERS WHERE id = {{${templateTagName}}}`,
           "template-tags": {
@@ -46,7 +46,6 @@ describe("Question", () => {
       question._parameterValues = { [templateTagId]: "5" };
       const results2 = await question.apiGetResults({ ignoreCache: true });
       expect(results2[0]).toBeDefined();
-      expect(results2[0].status).toBe("completed");
       expect(results2[0].data.rows[0][0]).toEqual(127.88197029833711);
     });
 
@@ -54,12 +53,12 @@ describe("Question", () => {
       const templateTagName = "orderid";
       const templateTagId = "f1cb12ed3-8727-41b6-bbb4-b7ba31884c30";
       const question = Question.create({
-        databaseId: DATABASE_ID,
-        tableId: ORDERS_TABLE_ID,
+        databaseId: SAMPLE_DATASET.id,
+        tableId: ORDERS.id,
         metadata,
       }).setDatasetQuery({
         ...NATIVE_QUERY_TEMPLATE,
-        database: DATABASE_ID,
+        database: SAMPLE_DATASET.id,
         native: {
           query: `SELECT SUBTOTAL FROM ORDERS [[WHERE id = {{${templateTagName}}}]]`,
           "template-tags": {
@@ -75,7 +74,6 @@ describe("Question", () => {
 
       const results1 = await question.apiGetResults({ ignoreCache: true });
       expect(results1[0]).toBeDefined();
-      expect(results1[0].status).toBe("completed");
       expect(results1[0].data.rows.length).toEqual(2000);
 
       question._parameterValues = { [templateTagId]: "5" };

@@ -1,4 +1,4 @@
-import LeafletMap from "./LeafletMap.jsx";
+import LeafletMap from "./LeafletMap";
 import L from "leaflet";
 
 import { isPK } from "metabase/lib/schema_metadata";
@@ -27,8 +27,8 @@ export default class LeafletMarkerPinMap extends LeafletMap {
       const { pinMarkerLayer } = this;
       const { points } = this.props;
 
-      let markers = pinMarkerLayer.getLayers();
-      let max = Math.max(points.length, markers.length);
+      const markers = pinMarkerLayer.getLayers();
+      const max = Math.max(points.length, markers.length);
       for (let i = 0; i < max; i++) {
         if (i >= points.length) {
           pinMarkerLayer.removeLayer(markers[i]);
@@ -54,7 +54,7 @@ export default class LeafletMarkerPinMap extends LeafletMap {
 
   _createMarker = rowIndex => {
     const marker = L.marker([0, 0], { icon: MARKER_ICON });
-    const { onHoverChange, onVisualizationClick } = this.props;
+    const { onHoverChange, onVisualizationClick, settings } = this.props;
     if (onHoverChange) {
       marker.on("mousemove", e => {
         const {
@@ -93,6 +93,8 @@ export default class LeafletMarkerPinMap extends LeafletMap {
             value: rows[rowIndex][pkIndex],
             column: cols[pkIndex],
             element: marker._icon,
+            origin: { row: rows[rowIndex], cols },
+            settings,
           });
         }
       });

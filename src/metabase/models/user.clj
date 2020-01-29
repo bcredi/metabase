@@ -14,8 +14,7 @@
              [permissions-group :as group]
              [permissions-group-membership :as perm-membership :refer [PermissionsGroupMembership]]]
             [metabase.util
-             [date :as du]
-             [i18n :refer [trs tru]]
+             [i18n :refer [trs]]
              [schema :as su]]
             [schema.core :as s]
             [toucan
@@ -35,7 +34,7 @@
   (assert (not (:password_salt user))
     "Don't try to pass an encrypted password to (insert! User). Password encryption is handled by pre-insert.")
   (let [salt     (str (UUID/randomUUID))
-        defaults {:date_joined  (du/new-sql-timestamp)
+        defaults {:date_joined  :%now
                   :last_login   nil
                   :is_active    true
                   :is_superuser false}]
@@ -89,9 +88,14 @@
   (cond-> user
     reset_token (assoc :reset_token (creds/hash-bcrypt reset_token))))
 
-(defn- post-select [{:keys [first_name last_name], :as user}]
+(defn add-common-name
+  "Add a `:common_name` key to `user` by combining their first and last names."
+  [{:keys [first_name last_name], :as user}]
   (cond-> user
     (or first_name last_name) (assoc :common_name (str first_name " " last_name))))
+
+(defn- post-select [user]
+  (add-common-name user))
 
 ;; `pre-delete` is more for the benefit of tests than anything else since these days we archive users instead of fully
 ;; deleting them. In other words the following code is only ever called by tests
@@ -171,9 +175,8 @@
     (email/send-new-user-email! new-user invitor join-url)))
 
 (def LoginAttributes
-  "Login attributes, currently not collected for LDAP or Google Auth. Will ultimately be stored as JSON"
-  (su/with-api-error-message {su/KeywordOrString (s/cond-pre s/Str s/Num)}
-    (tru "value must be a map with each value either a string or number.")))
+  "Login attributes, currently not collected for LDAP or Google Auth. Will ultimately be stored as JSON."
+  {su/KeywordOrString s/Any})
 
 (def NewUser
   "Required/optionals parameters needed to create a new user (for any backend)"
@@ -215,10 +218,11 @@
   "Convenience for creating a new user via LDAP. This account is considered active immediately; thus all active admins
   will receive an email right away."
   [new-user :- NewUser]
-  (insert-new-user! (-> new-user
-                        ;; We should not store LDAP passwords
-                        (dissoc :password)
-                        (assoc :ldap_auth true))))
+  (insert-new-user!
+   (-> new-user
+       ;; We should not store LDAP passwords
+       (dissoc :password)
+       (assoc :ldap_auth true))))
 
 (defn set-password!
   "Updates the stored password for a specified `User` by hashing the password with a random salt."

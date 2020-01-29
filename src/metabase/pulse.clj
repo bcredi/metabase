@@ -5,21 +5,22 @@
              [email :as email]
              [query-processor :as qp]
              [util :as u]]
-            [metabase.driver.util :as driver.u]
             [metabase.email.messages :as messages]
             [metabase.integrations.slack :as slack]
+            [metabase.middleware.session :as session]
             [metabase.models
              [card :refer [Card]]
-             [pulse :refer [Pulse]]]
+             [database :refer [Database]]
+             [pulse :as pulse :refer [Pulse]]]
             [metabase.pulse.render :as render]
+            [metabase.query-processor.timezone :as qp.timezone]
             [metabase.util
-             [i18n :refer [trs tru]]
+             [i18n :refer [deferred-tru trs tru]]
              [ui-logic :as ui]
              [urls :as urls]]
             [schema.core :as s]
             [toucan.db :as db])
-  (:import java.util.TimeZone
-           metabase.models.card.CardInstance))
+  (:import metabase.models.card.CardInstance))
 
 ;;; ------------------------------------------------- PULSE SENDING --------------------------------------------------
 
@@ -28,18 +29,18 @@
 ;; TODO - this should be done async
 (defn execute-card
   "Execute the query for a single Card. `options` are passed along to the Query Processor."
-  [card-or-id & {:as options}]
+  [{pulse-creator-id :creator_id} card-or-id & {:as options}]
   (let [card-id (u/get-id card-or-id)]
     (try
-      (when-let [card (Card :id card-id, :archived false)]
-        (let [{:keys [creator_id dataset_query]} card
-              query                              (assoc dataset_query :async? false)]
-          {:card   card
-           :result (qp/process-query-and-save-with-max-results-constraints! query
-                     (merge {:executed-by creator_id
-                             :context     :pulse
-                             :card-id     card-id}
-                            options))}))
+      (when-let [{query :dataset_query, :as card} (Card :id card-id, :archived false)]
+        (let [query (assoc query :async? false)]
+          (session/with-current-user pulse-creator-id
+            {:card   card
+             :result (qp/process-query-and-save-with-max-results-constraints! query
+                       (merge {:executed-by pulse-creator-id
+                               :context     :pulse
+                               :card-id     card-id}
+                              options))})))
       (catch Throwable e
         (log/warn e (trs "Error running query for Card {0}" card-id))))))
 
@@ -47,21 +48,20 @@
   (or (:database_id card)
       (get-in card [:dataset_query :database])))
 
-(s/defn defaulted-timezone :- TimeZone
-  "Returns the timezone for the given `CARD`. Either the report
-  timezone (if applicable) or the JVM timezone."
+(s/defn defaulted-timezone :- s/Str
+  "Returns the timezone ID for the given `card`. Either the report timezone (if applicable) or the JVM timezone."
   [card :- CardInstance]
-  (let [^String timezone-str (or (some-> card database-id driver.u/database->driver driver.u/report-timezone-if-supported)
-                                 (System/getProperty "user.timezone"))]
-    (TimeZone/getTimeZone timezone-str)))
+  (or (some-> card database-id Database qp.timezone/results-timezone-id)
+      (qp.timezone/system-timezone-id)))
 
 (defn- first-question-name [pulse]
   (-> pulse :cards first :name))
 
-(def ^:private alert-notification-condition-text
-  {:meets "reached its goal"
-   :below "gone below its goal"
-   :rows  "results"})
+(defn- alert-condition-type->description [condition-type]
+  (case (keyword condition-type)
+    :meets (trs "reached its goal")
+    :below (trs "gone below its goal")
+    :rows  (trs "results")))
 
 (defn create-slack-attachment-data
   "Returns a seq of slack attachment data structures, used in `create-and-upload-slack-attachments!`"
@@ -107,14 +107,19 @@
                                                             (get-in first-result [:result :data]))]
 
     (when-not (and goal-val comparison-col-rowfn)
-      (throw (Exception. (str (tru "Unable to compare results to goal for alert.")
+      (throw (Exception. (str (deferred-tru "Unable to compare results to goal for alert.")
                               " "
-                              (tru "Question ID is ''{0}'' with visualization settings ''{1}''"
-                                   (get-in results [:card :id])
-                                   (pr-str (get-in results [:card :visualization_settings])))))))
+                              (deferred-tru "Question ID is ''{0}'' with visualization settings ''{1}''"
+                                        (get-in results [:card :id])
+                                        (pr-str (get-in results [:card :visualization_settings])))))))
     (some (fn [row]
             (goal-comparison goal-val (comparison-col-rowfn row)))
           (get-in first-result [:result :data :rows]))))
+
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                         Creating Notifications To Send                                         |
+;;; +----------------------------------------------------------------------------------------------------------------+
 
 (defn- alert-or-pulse [pulse]
   (if (:alert_condition pulse)
@@ -135,7 +140,7 @@
     (goal-met? alert results)
 
     :else
-    (let [^String error-text (str (tru "Unrecognized alert with condition ''{0}''" alert_condition))]
+    (let [^String error-text (tru "Unrecognized alert with condition ''{0}''" alert_condition)]
       (throw (IllegalArgumentException. error-text)))))
 
 (defmethod should-send-notification? :pulse
@@ -144,16 +149,17 @@
     (not (are-all-cards-empty? results))
     true))
 
-(defmulti ^:private create-notification
+(defmulti ^:private notification
   "Polymorphoic function for creating notifications. This logic is different for pulse type (i.e. alert vs. pulse) and
   channel_type (i.e. email vs. slack)"
+  {:arglists '([alert-or-pulse results channel])}
   (fn [pulse _ {:keys [channel_type] :as channel}]
     [(alert-or-pulse pulse) (keyword channel_type)]))
 
-(defmethod create-notification [:pulse :email]
+(defmethod notification [:pulse :email]
   [{:keys [id name] :as pulse} results {:keys [recipients] :as channel}]
-  (log/debug (format "Sending Pulse (%d: %s) via Channel :email" id name))
-  (let [email-subject    (str "Pulse: " name)
+  (log/debug (trs "Sending Pulse ({0}: {1}) via email" id name))
+  (let [email-subject    (trs "Pulse: {0}" name)
         email-recipients (filterv u/email? (map :email recipients))
         timezone         (-> results first :card defaulted-timezone)]
     {:subject      email-subject
@@ -161,20 +167,20 @@
      :message-type :attachments
      :message      (messages/render-pulse-email timezone pulse results)}))
 
-(defmethod create-notification [:pulse :slack]
+(defmethod notification [:pulse :slack]
   [pulse results {{channel-id :channel} :details :as channel}]
-  (log/debug (u/format-color 'cyan "Sending Pulse (%d: %s) via Slack" (:id pulse) (:name pulse)))
+  (log/debug (u/format-color 'cyan (trs "Sending Pulse ({0}: {1}) via Slack" (:id pulse) (:name pulse))))
   {:channel-id  channel-id
    :message     (str "Pulse: " (:name pulse))
    :attachments (create-slack-attachment-data results)})
 
-(defmethod create-notification [:alert :email]
-  [{:keys [id] :as pulse} results {:keys [recipients] :as channel}]
-  (log/debug (format "Sending Pulse (%d: %s) via Channel :email" id name))
+(defmethod notification [:alert :email]
+  [{:keys [id] :as pulse} results {:keys [recipients]}]
+  (log/debug (trs "Sending Alert ({0}: {1}) via email" id name))
   (let [condition-kwd    (messages/pulse->alert-condition-kwd pulse)
-        email-subject    (format "Metabase alert: %s has %s"
-                                 (first-question-name pulse)
-                                 (get alert-notification-condition-text condition-kwd))
+        email-subject    (trs "Metabase alert: {0} has {1}"
+                              (first-question-name pulse)
+                              (alert-condition-type->description condition-kwd))
         email-recipients (filterv u/email? (map :email recipients))
         first-result     (first results)
         timezone         (-> first-result :card defaulted-timezone)]
@@ -183,21 +189,45 @@
      :message-type :attachments
      :message      (messages/render-alert-email timezone pulse results (ui/find-goal-value first-result))}))
 
-(defmethod create-notification [:alert :slack]
-  [pulse results {{channel-id :channel} :details :as channel}]
-  (log/debug (u/format-color 'cyan "Sending Alert (%d: %s) via Slack" (:id pulse) (:name pulse)))
-  {:channel-id channel-id
-   :message (str "Alert: " (first-question-name pulse))
+(defmethod notification [:alert :slack]
+  [pulse results {{channel-id :channel} :details}]
+  (log/debug (u/format-color 'cyan (trs "Sending Alert ({0}: {1}) via Slack" (:id pulse) (:name pulse))))
+  {:channel-id  channel-id
+   :message     (trs "Alert: {0}" (first-question-name pulse))
    :attachments (create-slack-attachment-data results)})
 
-(defmethod create-notification :default
-  [_ _ {:keys [channel_type] :as channel}]
-  (let [^String ex-msg (str (tru "Unrecognized channel type {0}" (pr-str channel_type)))]
-    (throw (UnsupportedOperationException. ex-msg))))
+(defmethod notification :default
+  [_ _ {:keys [channel_type]}]
+  (throw (UnsupportedOperationException. (tru "Unrecognized channel type {0}" (pr-str channel_type)))))
+
+(defn- results->notifications [{:keys [channels channel-ids], pulse-id :id, :as pulse} results]
+  (let [channel-ids (or channel-ids (mapv :id channels))]
+    (when (should-send-notification? pulse results)
+      (when (:alert_first_only pulse)
+        (db/delete! Pulse :id pulse-id))
+      ;; `channel-ids` is the set of channels to send to now, so only send to those. Note the whole set of channels
+      (for [channel channels
+            :when   (contains? (set channel-ids) (:id channel))]
+        (notification pulse results channel)))))
+
+(defn- pulse->notifications [{:keys [cards], pulse-id :id, :as pulse}]
+  (let [results (for [card  cards
+                      ;; Pulse ID may be `nil` if the Pulse isn't saved yet
+                      :let  [result (execute-card pulse (u/get-id card), :pulse-id pulse-id)]
+                      ;; some cards may return empty results, e.g. if the card has been archived
+                      :when result]
+                  result)]
+    (results->notifications pulse results)))
+
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                             Sending Notifications                                              |
+;;; +----------------------------------------------------------------------------------------------------------------+
 
 (defmulti ^:private send-notification!
   "Invokes the side-affecty function for sending emails/slacks depending on the notification type"
-  (fn [{:keys [channel-id] :as notification}]
+  {:arglists '([pulse-or-alert])}
+  (fn [{:keys [channel-id]}]
     (if channel-id :slack :email)))
 
 (defmethod send-notification! :slack
@@ -222,28 +252,22 @@
       (catch Throwable e
         (log/error e (trs "Error sending notification!"))))))
 
-(defn- pulse->notifications [{:keys [cards channel-ids], :as pulse}]
-  (let [results     (for [card  cards
-                          :let  [result (execute-card (:id card), :pulse-id (:id pulse))] ; Pulse ID may be `nil` if the Pulse isn't saved yet
-                          :when result] ; some cards may return empty results, e.g. if the card has been archived
-                      result)
-        channel-ids (or channel-ids (mapv :id (:channels pulse)))]
-    (when (should-send-notification? pulse results)
-
-      (when (:alert_first_only pulse)
-        (db/delete! Pulse :id (:id pulse)))
-
-      (for [channel-id channel-ids
-            :let       [channel (some #(when (= channel-id (:id %)) %) (:channels pulse))]]
-        (create-notification pulse results channel)))))
-
 (defn send-pulse!
   "Execute and Send a `Pulse`, optionally specifying the specific `PulseChannels`.  This includes running each
    `PulseCard`, formatting the results, and sending the results to any specified destination.
+
+  `channel-ids` is the set of channel IDs to send to *now* -- this may be a subset of the full set of channels for
+  the Pulse.
 
    Example:
        (send-pulse! pulse)                       Send to all Channels
        (send-pulse! pulse :channel-ids [312])    Send only to Channel with :id = 312"
   [{:keys [cards], :as pulse} & {:keys [channel-ids]}]
-  {:pre [(map? pulse) (every? map? cards) (every? :id cards)]}
-  (send-notifications! (pulse->notifications (merge pulse (when channel-ids {:channel-ids channel-ids})))))
+  {:pre [(map? pulse)]}
+  (let [pulse (-> pulse
+                  pulse/map->PulseInstance
+                  ;; This is usually already done by this step, in the `send-pulses` task which uses `retrieve-pulse`
+                  ;; to fetch the Pulse.
+                  pulse/hydrate-notification
+                  (merge (when channel-ids {:channel-ids channel-ids})))]
+    (send-notifications! (pulse->notifications pulse))))

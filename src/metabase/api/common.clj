@@ -11,7 +11,7 @@
             [metabase.api.common.internal :refer :all]
             [metabase.models.interface :as mi]
             [metabase.util
-             [i18n :as ui18n :refer [trs tru]]
+             [i18n :as ui18n :refer [deferred-trs deferred-tru tru]]
              [schema :as su]]
             [schema.core :as s]
             [toucan.db :as db]))
@@ -41,11 +41,20 @@
 
 ;;; ---------------------------------------- Precondition checking helper fns ----------------------------------------
 
+(defn- check-one [condition code message]
+  (when-not condition
+    (let [[message info] (if (and (map? message)
+                                  (not (ui18n/localized-string? message)))
+                           [(:message message) message]
+                           [message])]
+      (throw (ex-info (str message) (assoc info :status-code code)))))
+  condition)
+
 (defn check
   "Assertion mechanism for use inside API functions.
-  Checks that TEST is true, or throws an `ExceptionInfo` with STATUS-CODE and MESSAGE.
+  Checks that `test` is true, or throws an `ExceptionInfo` with `status-code` and `message`.
 
-  MESSAGE can be either a plain string error message, or a map including the key `:message` and any additional
+  `message` can be either a plain string error message, or a map including the key `:message` and any additional
   details, such as an `:error_code`.
 
   This exception is automatically caught in the body of `defendpoint` functions, and the appropriate HTTP response is
@@ -63,18 +72,15 @@
 
     (check test1 code1 message1
            test2 code2 message2)"
-  {:style/indent 1}
-  ([tst code-or-code-message-pair & rest-args]
-   (let [[[code message] rest-args] (if (vector? code-or-code-message-pair)
-                                      [code-or-code-message-pair rest-args]
-                                      [[code-or-code-message-pair (first rest-args)] (rest rest-args)])]
-     (when-not tst
-       (throw (if (and (map? message)
-                       (not (ui18n/localized-string? message)))
-                (ui18n/ex-info (:message message) (assoc message :status-code code))
-                (ui18n/ex-info message            {:status-code code}))))
-     (if (empty? rest-args) tst
-         (recur (first rest-args) (second rest-args) (drop 2 rest-args))))))
+  {:style/indent 1, :arglists '([condition [code message] & more] [condition code message & more])}
+  [condition & args]
+  (let [[code message & more] (if (sequential? (first args))
+                                (concat (first args) (rest args))
+                                args)]
+    (check-one condition code message)
+    (if (seq more)
+      (recur (first more) (rest more))
+      condition)))
 
 (defn check-exists?
   "Check that object with ID (or other key/values) exists in the DB, or throw a 404."
@@ -95,13 +101,13 @@
 (defn throw-invalid-param-exception
   "Throw an `ExceptionInfo` that contains information about an invalid API params in the expected format."
   [field-name message]
-  (throw (ui18n/ex-info (tru "Invalid field: {0}" field-name)
+  (throw (ex-info (tru "Invalid field: {0}" field-name)
            {:status-code 400
             :errors      {(keyword field-name) message}})))
 
 (defn checkp
   "Assertion mechanism for use inside API functions that validates individual input params.
-  Checks that TEST is true, or throws an `ExceptionInfo` with FIELD-NAME and MESSAGE.
+  Checks that `test` is true, or throws an `ExceptionInfo` with `field-name` and `message`.
 
   This exception is automatically caught in the body of `defendpoint` functions, and the appropriate HTTP response is
   generated.
@@ -114,40 +120,6 @@
    (when-not tst
      (throw-invalid-param-exception (str field-name) message))))
 
-(defn checkp-with
-  "Check (F VALUE), or throw an exception with STATUS-CODE (default is 400).
-   SYMB is passed in order to give the user a relevant error message about which parameter was bad.
-
-   Returns VALUE upon success.
-
-    (checkp-with (partial? contains? {:all :mine}) f :all)
-      -> :all
-    (checkp-with (partial? contains {:all :mine}) f :bad)
-      -> ExceptionInfo: Invalid value ':bad' for 'f': test failed: (partial? contains?) {:all :mine}
-
-   You may optionally pass a MESSAGE to append to the exception upon failure;
-   this will be used in place of the \"test failed: ...\" message.
-
-   MESSAGE may be either a string or a pair like `[status-code message]`."
-  ([f symb value]
-   (checkp-with f symb value (str "test failed: " f)))
-  ([f symb value message]
-   {:pre [(symbol? symb)]}
-   (checkp (f value) symb (tru "Invalid value ''{0}'' for ''{1}'': {2}" (str value) symb message))
-   value))
-
-(defn checkp-contains?
-  "Check that the VALUE of parameter SYMB is in VALID-VALUES, or throw a 400.
-   Returns VALUE upon success.
-
-    (checkp-contains? #{:fav :all :mine} 'f f)
-    -> (check (contains? #{:fav :all :mine} f)
-         [400 (str \"Invalid value '\" f \"' for 'f': must be one of: #{:fav :all :mine}\")])"
-  [valid-values-set symb value]
-  {:pre [(set? valid-values-set) (symbol? symb)]}
-  (checkp-with (partial contains? valid-values-set) symb value
-               (tru "must be one of: {0}" valid-values-set)))
-
 
 ;;; ---------------------------------------------- api-let, api->, etc. ----------------------------------------------
 
@@ -158,22 +130,19 @@
 ;;
 ;;     (let [binding x] ...) -> (api-let [500 \"Not OK!\"] [binding x] ...)
 
-(defmacro api-let
-  "If TEST is true, bind it to BINDING and evaluate BODY.
+(defmacro do-api-let
+  "If `test` is true, bind it to `binding` and evaluate `body`. Intended for internal use only by macros such as
+  `let-400` below.
 
     (api-let [404 \"Not found.\"] [user @*current-user*]
       (:id user))"
-  {:arglists '([[status-code message] [binding test] & body]), :style/indent 2}
-  [response-pair [binding test & more] & body]
-  (if (seq more)
-    `(api-let ~response-pair ~[binding test]
-       (api-let ~response-pair ~more
-         ~@body))
-    `(let [test# ~test] ; bind ~test so doesn't get evaluated more than once (e.g. in case it's an expensive funcall)
-       (check test# ~response-pair)
-       (let [~binding test#
-             ~@more]
-         ~@body))))
+  [response-pair bindings & body]
+  ;; so `response-pair` doesn't get evaluated more than once
+  (let [response-pair-symb (gensym "response-pair-")]
+    `(let [~response-pair-symb ~response-pair
+           ~@(vec (apply concat (for [[binding test] (partition-all 2 bindings)]
+                                  [binding `(check ~test ~response-pair-symb)])))]
+       ~@body)))
 
 
 ;;; ### GENERIC RESPONSE HELPERS
@@ -181,7 +150,7 @@
 
 ;; #### GENERIC 400 RESPONSE HELPERS
 (def ^:private generic-400
-  [400 (tru "Invalid Request.")])
+  [400 (deferred-tru "Invalid Request.")])
 
 (defn check-400
   "Throw a `400` if `arg` is `false` or `nil`, otherwise return as-is."
@@ -192,11 +161,11 @@
   "Bind a form as with `let`; throw a 400 if it is `nil` or `false`."
   {:style/indent 1}
   [& body]
-  `(api-let ~generic-400 ~@body))
+  `(do-api-let ~generic-400 ~@body))
 
 ;; #### GENERIC 404 RESPONSE HELPERS
 (def ^:private generic-404
-  [404 (tru "Not found.")])
+  [404 (deferred-tru "Not found.")])
 
 (defn check-404
   "Throw a `404` if `arg` is `false` or `nil`, otherwise return as-is."
@@ -206,8 +175,8 @@
 (defmacro let-404
   "Bind a form as with `let`; throw a 404 if it is `nil` or `false`."
   {:style/indent 1}
-  [& body]
-  `(api-let ~generic-404 ~@body))
+  [bindings & body]
+  `(do-api-let ~generic-404 ~bindings ~@body))
 
 ;; #### GENERIC 403 RESPONSE HELPERS
 ;; If you can't be bothered to write a custom error message
@@ -218,21 +187,22 @@
   "Throw a `403` (no permissions) if `arg` is `false` or `nil`, otherwise return as-is."
   [arg]
   (check arg (generic-403)))
+
 (defmacro let-403
   "Bind a form as with `let`; throw a 403 if it is `nil` or `false`."
   {:style/indent 1}
-  [& body]
-  `(api-let (generic-403) ~@body))
+  [bindings & body]
+  `(do-api-let (generic-403) ~bindings ~@body))
 
 (defn throw-403
   "Throw a generic 403 (no permissions) error response."
   []
-  (throw (ui18n/ex-info (tru "You don''t have permissions to do that.") {:status-code 403})))
+  (throw (ex-info (tru "You don''t have permissions to do that.") {:status-code 403})))
 
 ;; #### GENERIC 500 RESPONSE HELPERS
 ;; For when you don't feel like writing something useful
 (def ^:private generic-500
-  [500 (tru "Internal server error.")])
+  [500 (deferred-tru "Internal server error.")])
 
 (defn check-500
   "Throw a `500` if `arg` is `false` or `nil`, otherwise return as-is."
@@ -242,8 +212,8 @@
 (defmacro let-500
   "Bind a form as with `let`; throw a 500 if it is `nil` or `false`."
   {:style/indent 1}
-  [& body]
-  `(api-let   ~generic-500 ~@body))
+  [bindings & body]
+  `(do-api-let ~generic-500 ~bindings ~@body))
 
 (def ^:const generic-204-no-content
   "A 'No Content' response for `DELETE` endpoints to return."
@@ -281,7 +251,7 @@
         [arg->schema body]     (u/optional (every-pred map? #(every? symbol? (keys %))) more)
         validate-param-calls   (validate-params arg->schema)]
     (when-not docstr
-      (log/warn (trs "Warning: endpoint {0}/{1} does not have a docstring." (ns-name *ns*) fn-name)))
+      (log/warn (deferred-trs "Warning: endpoint {0}/{1} does not have a docstring." (ns-name *ns*) fn-name)))
     `(def ~(vary-meta fn-name assoc
                       ;; eval the vals in arg->schema to make sure the actual schemas are resolved so we can document
                       ;; their API error messages
@@ -302,7 +272,7 @@
         [arg->schema body]     (u/optional (every-pred map? #(every? symbol? (keys %))) more)
         validate-param-calls   (validate-params arg->schema)]
     (when-not docstr
-      (log/warn (trs "Warning: endpoint {0}/{1} does not have a docstring." (ns-name *ns*) fn-name)))
+      (log/warn (deferred-trs "Warning: endpoint {0}/{1} does not have a docstring." (ns-name *ns*) fn-name)))
     `(def ~(vary-meta fn-name assoc
                       ;; eval the vals in arg->schema to make sure the actual schemas are resolved so we can document
                       ;; their API error messages
@@ -350,9 +320,18 @@
 
      (api/+check-superuser routes)"
   [handler]
-  (fn [request]
-    (check-superuser)
-    (handler request)))
+  (fn
+    ([request]
+     (check-superuser)
+     (handler request))
+    ([request respond raise]
+     (if-let [e (try
+                  (check-superuser)
+                  nil
+                  (catch Throwable e
+                    e))]
+       (raise e)
+       (handler request respond raise)))))
 
 
 ;;; ---------------------------------------- PERMISSIONS CHECKING HELPER FNS -----------------------------------------

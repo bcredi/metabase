@@ -19,7 +19,7 @@ import { t } from "ttag";
 import { getTemplateTags } from "./Card";
 
 import { slugify, stripId } from "metabase/lib/formatting";
-import Query from "metabase/lib/query";
+import * as Q_DEPRECATED from "metabase/lib/query";
 import { TYPE, isa } from "metabase/lib/types";
 
 import _ from "underscore";
@@ -117,7 +117,7 @@ export const PARAMETER_SECTIONS: Array<ParameterSection> = [
 ];
 
 for (const option of PARAMETER_OPTIONS) {
-  let sectionId = option.type.split("/")[0];
+  const sectionId = option.type.split("/")[0];
   let section = _.findWhere(PARAMETER_SECTIONS, { id: sectionId });
   if (!section) {
     section = _.findWhere(PARAMETER_SECTIONS, { id: "category" });
@@ -182,7 +182,7 @@ export function getCardDimensions(
       return getTableDimensions(table, 1, filter);
     }
   } else if (card.dataset_query.type === "native") {
-    let dimensions = [];
+    const dimensions = [];
     for (const tag of getTemplateTags(card)) {
       if (
         tag.type === "dimension" &&
@@ -191,7 +191,7 @@ export function getCardDimensions(
       ) {
         const field = metadata.fields[tag.dimension[1]];
         if (field && filter(field)) {
-          let fieldDimension = getFieldDimension(field);
+          const fieldDimension = getFieldDimension(field);
           dimensions.push(getTagDimension(tag, fieldDimension));
         }
       }
@@ -205,7 +205,7 @@ function getDimensionTargetFieldId(target: DimensionTarget): ?FieldId {
   if (Array.isArray(target) && target[0] === "template-tag") {
     return null;
   } else {
-    return Query.getFieldTargetId(target);
+    return Q_DEPRECATED.getFieldTargetId(target);
   }
 }
 
@@ -216,21 +216,27 @@ export function getTableDimensions(
 ): Array<Dimension> {
   return _.chain(table.fields)
     .map(field => {
-      let targetField = field.target;
-      if (targetField && depth > 0) {
-        let targetTable = targetField.table;
-        return getTableDimensions(targetTable, depth - 1, filter).map(
-          (dimension: Dimension) => ({
-            ...dimension,
-            parentName: stripId(field.display_name),
-            target: [
-              "fk->",
-              field.id,
-              getDimensionTargetFieldId(dimension.target),
-            ],
-            depth: dimension.depth + 1,
-          }),
-        );
+      const targetField = field.target;
+      if (targetField && depth > 0 && targetField.table) {
+        const targetTable = targetField.table;
+        const dimensions = getTableDimensions(
+          targetTable,
+          depth - 1,
+          filter,
+        ).map((dimension: Dimension) => ({
+          ...dimension,
+          parentName: stripId(field.display_name),
+          target: [
+            "fk->",
+            field.id,
+            getDimensionTargetFieldId(dimension.target),
+          ],
+          depth: dimension.depth + 1,
+        }));
+        if (filter(field)) {
+          dimensions.push(getFieldDimension(field));
+        }
+        return dimensions;
       } else if (filter(field)) {
         return [getFieldDimension(field)];
       }
@@ -246,7 +252,7 @@ export function getCardVariables(
   filter: TemplateTagFilter = () => true,
 ): Array<Variable> {
   if (card.dataset_query.type === "native") {
-    let variables = [];
+    const variables = [];
     for (const tag of getTemplateTags(card)) {
       if (!filter || filter(tag)) {
         variables.push({
@@ -261,7 +267,10 @@ export function getCardVariables(
   return [];
 }
 
-function fieldFilterForParameter(parameter: Parameter) {
+function fieldFilterForParameter(parameter: ?Parameter = null) {
+  if (!parameter) {
+    return () => true;
+  }
   return fieldFilterForParameterType(parameter.type);
 }
 
@@ -297,7 +306,12 @@ export function parameterOptionsForField(field: Field): ParameterOption[] {
   );
 }
 
-function tagFilterForParameter(parameter: Parameter): TemplateTagFilter {
+function tagFilterForParameter(
+  parameter: ?Parameter = null,
+): TemplateTagFilter {
+  if (!parameter) {
+    return () => true;
+  }
   const [type, subtype] = parameter.type.split("/");
   switch (type) {
     case "date":
@@ -320,10 +334,10 @@ const VARIABLE_ICONS = {
 
 export function getParameterMappingOptions(
   metadata: Metadata,
-  parameter: Parameter,
+  parameter: ?Parameter = null,
   card: Card,
 ): Array<ParameterMappingUIOption> {
-  let options = [];
+  const options = [];
 
   // dimensions
   options.push(
@@ -369,7 +383,7 @@ export function createParameter(
   while (_.any(parameters, p => p.name === name)) {
     name = option.name + " " + ++nameIndex;
   }
-  let parameter = {
+  const parameter = {
     name: "",
     slug: "",
     id: Math.floor(Math.random() * Math.pow(2, 32)).toString(16),
@@ -382,7 +396,10 @@ export function setParameterName(
   parameter: Parameter,
   name: string,
 ): Parameter {
-  let slug = slugify(name);
+  if (!name) {
+    name = "unnamed";
+  }
+  const slug = slugify(name);
   return {
     ...parameter,
     name: name,

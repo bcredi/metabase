@@ -1,3 +1,7 @@
+// we mock ExplicitSize in register-visualizations for all tests, we need to
+// undo it just for this test
+jest.unmock("metabase/components/ExplicitSize");
+
 import React from "react";
 import renderer from "react-test-renderer";
 import { render } from "enzyme";
@@ -5,7 +9,7 @@ import { assocIn } from "icepick";
 
 import DashCard from "metabase/dashboard/components/DashCard";
 
-jest.mock("metabase/visualizations/components/Visualization.jsx");
+jest.mock("metabase/visualizations/components/Visualization");
 
 const DEFAULT_PROPS = {
   dashcard: {

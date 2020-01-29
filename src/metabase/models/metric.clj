@@ -25,7 +25,7 @@
     ;; throw an Exception if someone tries to update creator_id
     (when (contains? updates :creator_id)
       (when (not= creator_id (db/select-one-field :creator_id Metric :id id))
-        (throw (UnsupportedOperationException. (str (tru "You cannot update the creator_id of a Metric."))))))))
+        (throw (UnsupportedOperationException. (tru "You cannot update the creator_id of a Metric.")))))))
 
 (defn- pre-delete [{:keys [id]}]
   (db/delete! 'MetricImportantField :metric_id id))
@@ -39,7 +39,7 @@
   models/IModel
   (merge
    models/IModelDefaults
-   {:types      (constantly {:definition :metric-segment-definition, :description :clob})
+   {:types      (constantly {:definition :metric-segment-definition})
     :properties (constantly {:timestamped? true})
     :pre-delete pre-delete
     :pre-update pre-update})

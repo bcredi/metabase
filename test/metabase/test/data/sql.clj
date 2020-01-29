@@ -1,12 +1,10 @@
 (ns metabase.test.data.sql
   "Common test extension functionality for all SQL drivers."
   (:require [clojure.string :as str]
+            [clojure.tools.logging :as log]
             [metabase.driver :as driver]
-            [metabase.driver.sql
-             [query-processor :as sql.qp]
-             [util :as sql.u]]
-            [metabase.test.data.interface :as tx]
-            [metabase.util.honeysql-extensions :as hx])
+            [metabase.driver.sql.util :as sql.u]
+            [metabase.test.data.interface :as tx])
   (:import metabase.test.data.interface.FieldDefinition))
 
 (driver/register! :sql/test-extensions, :abstract? true)
@@ -49,20 +47,6 @@
   ([_ db-name table-name]            [table-name])
   ([_ db-name table-name field-name] [table-name field-name]))
 
-(defn qualified-identifier
-  "Call `qualified-name-components` on a set of string or keyword names, then pass it to `hx/identifier`. The resulting
-  object can be included directly in a HoneySQL form and will automatically be converted to an appropriately quoted
-  identifer when the HoneySQL form is compiled.
-
-    (qualified-identifier \"my_db\" \"my_table\") ; -> (hx/identifier :table \"MY_DB\" \"MY_TABLE\") ; for H2"
-  {:arglists '([driver db-name] [driver db-name table-name] [driver db-name table-name field-name])}
-  [driver & names]
-  (->> names
-       (apply qualified-name-components driver)
-       (map (partial tx/format-name driver))
-       (apply hx/identifier)
-       (sql.qp/->honeysql driver)))
-
 (defn qualify-and-quote
   "Qualify names and combine into a single, quoted string. By default, this passes the results of
   `qualified-name-components` to `tx/format-name` and then to `sql.u/quote-name`.
@@ -70,8 +54,8 @@
     (qualify-and-quote [driver \"my-db\" \"my-table\"]) -> \"my-db\".\"dbo\".\"my-table\"
 
   You should only use this function in places where you are working directly with SQL. For HoneySQL forms, use
-  `qualified-identifier` instead."
-  {:arglists '([driver db-name] [driver db-name table-name] [driver db-name table-name field-name])}
+  `hx/identifier` instead."
+  {:arglists '([driver db-name] [driver db-name table-name] [driver db-name table-name field-name]), :style/indent 1}
   [driver & names]
   (let [identifier-type (condp = (count names)
                           1 :database
@@ -159,10 +143,25 @@
 ;;; +----------------------------------------------------------------------------------------------------------------+
 
 (defmulti field-base-type->sql-type
-  "Return a native SQL type that should be used for fields of BASE-TYPE."
+  "Return a native SQL type that should be used for fields of `base-type`."
   {:arglists '([driver base-type])}
   (fn [driver base-type] [(tx/dispatch-on-driver-with-test-extensions driver) base-type])
   :hierarchy #'driver/hierarchy)
+
+(defmethod field-base-type->sql-type :default
+  [driver base-type]
+  (or (some
+       (fn [ancestor-type]
+         (when-not (= ancestor-type :type/*)
+           (when-let [method (get (methods field-base-type->sql-type) [driver ancestor-type])]
+             (log/infof "No test data type mapping for driver %s for base type %s, falling back to ancestor base type %s"
+                        driver base-type ancestor-type)
+             (method driver base-type))))
+       (ancestors base-type))
+      (throw
+       (Exception.
+        (format "No test data type mapping for driver %s for base type %s; add an impl for field-base-type->sql-type."
+                driver base-type)))))
 
 
 (defmulti pk-sql-type
@@ -205,14 +204,15 @@
     (format "CREATE TABLE %s (%s, %s %s, PRIMARY KEY (%s)) %s;"
             (qualify-and-quote driver database-name table-name)
             (str/join
-             " ,"
+             ", "
              (for [{:keys [field-name base-type field-comment]} field-definitions]
-               (format "%s %s %s"
-                       (quot field-name)
-                       (if (map? base-type)
-                         (:native base-type)
-                         (field-base-type->sql-type driver base-type))
-                       (or (inline-column-comment-sql driver field-comment) ""))))
+               (str (format "%s %s"
+                            (quot field-name)
+                            (if (map? base-type)
+                              (:native base-type)
+                              (field-base-type->sql-type driver base-type)))
+                    (when-let [comment (inline-column-comment-sql driver field-comment)]
+                      (str " " comment)))))
             pk-field-name (pk-sql-type driver)
             pk-field-name
             (or (inline-table-comment-sql driver table-comment) ""))))
@@ -245,7 +245,11 @@
     (format "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s (%s);"
             (qualify-and-quote driver database-name table-name)
             ;; limit FK constraint name to 30 chars since Oracle doesn't support names longer than that
-            (quot :constraint (apply str (take 30 (format "fk_%s_%s_%s" table-name field-name dest-table-name))))
+            (let [fk-name (format "fk_%s_%s_%s_%s" database-name table-name field-name dest-table-name)
+                  fk-name (if (> (count fk-name) 30)
+                            (str/join (take-last 30 (str fk-name \_ (hash fk-name))))
+                            fk-name)]
+              (quot :constraint fk-name))
             (quot :field field-name)
             (qualify-and-quote driver database-name dest-table-name)
             (quot :field (pk-field-name driver)))))

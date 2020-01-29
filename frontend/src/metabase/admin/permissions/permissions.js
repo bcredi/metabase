@@ -47,7 +47,7 @@ export const updatePermission = createThunkAction(
     getState,
   ) => {
     if (postAction) {
-      let action = postAction(groupId, entityId, value);
+      const action = postAction(groupId, entityId, value);
       if (action) {
         dispatch(action);
       }
@@ -62,7 +62,7 @@ export const savePermissions = createThunkAction(
   () => async (dispatch, getState) => {
     MetabaseAnalytics.trackEvent("Permissions", "save");
     const { permissions, revision, save } = getState().admin.permissions;
-    let result = await save({
+    const result = await save({
       revision: revision,
       groups: permissions,
     });
@@ -73,6 +73,9 @@ export const savePermissions = createThunkAction(
 const SET_PROPAGATE_PERMISSIONS =
   "metabase/admin/permissions/SET_PROPAGATE_PERMISSIONS";
 export const setPropagatePermissions = createAction(SET_PROPAGATE_PERMISSIONS);
+
+const CLEAR_SAVE_ERROR = "metabase/admin/permissions/CLEAR_SAVE_ERROR";
+export const clearSaveError = createAction(CLEAR_SAVE_ERROR);
 
 const save = handleActions(
   {
@@ -128,6 +131,7 @@ const saveError = handleActions(
     [LOAD_PERMISSIONS]: {
       next: state => null,
     },
+    [CLEAR_SAVE_ERROR]: { next: () => null },
   },
   null,
 );

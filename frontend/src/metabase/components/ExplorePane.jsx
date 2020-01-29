@@ -9,7 +9,7 @@ import Select, { Option } from "metabase/components/Select";
 import { Grid, GridItem } from "metabase/components/Grid";
 import Card from "metabase/components/Card";
 import { Flex } from "grid-styled";
-import colors from "metabase/lib/colors";
+import { color } from "metabase/lib/colors";
 
 import { t } from "ttag";
 import _ from "underscore";
@@ -50,7 +50,7 @@ export class ExplorePane extends React.Component {
   };
 
   render() {
-    let {
+    const {
       candidates,
       title,
       description,
@@ -62,7 +62,7 @@ export class ExplorePane extends React.Component {
 
     let schemaNames;
     let tables;
-    let hasMore = false;
+    const hasMore = false;
     if (candidates && candidates.length > 0) {
       schemaNames = candidates.map(schema => schema.schema);
       if (schemaName == null) {
@@ -162,7 +162,7 @@ export const ExploreOption = ({ option }: { option: Candidate }) => (
     <Flex
       align="center"
       justify="center"
-      bg={colors["accent4"]}
+      bg={color("accent4")}
       w="42px"
       style={{ borderRadius: 6, height: 42 }}
       mr={1}
@@ -170,7 +170,8 @@ export const ExploreOption = ({ option }: { option: Candidate }) => (
       <Icon name="bolt" size={20} className="flex-no-shrink text-white" />
     </Flex>
     <div>
-      {t`A look at your`} <span className="text-bold">{option.title}</span>
+      {t`A look at your`}{" "}
+      <span className="text-bold text-wrap">{option.title}</span>
     </div>
   </Link>
 );

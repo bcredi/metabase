@@ -3,7 +3,7 @@ import ReactDOM from "react-dom";
 
 import { isObscured } from "metabase/lib/dom";
 
-import Tooltip from "./Tooltip.jsx";
+import Tooltip from "./Tooltip";
 
 import cx from "classnames";
 
@@ -88,7 +88,7 @@ export default ComposedComponent =>
     _startCheckObscured() {
       if (this._offscreenTimer == null) {
         this._offscreenTimer = setInterval(() => {
-          let trigger = ReactDOM.findDOMNode(this.refs.trigger);
+          const trigger = ReactDOM.findDOMNode(this.refs.trigger);
           if (isObscured(trigger)) {
             this.close();
           }
@@ -110,7 +110,9 @@ export default ComposedComponent =>
         triggerClassesOpen,
         triggerClassesClose,
       } = this.props;
-      const { isOpen } = this.state;
+
+      const isOpen =
+        this.props.isOpen != null ? this.props.isOpen : this.state.isOpen;
 
       let { triggerElement } = this.props;
       if (triggerElement && triggerElement.type === Tooltip) {

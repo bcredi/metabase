@@ -3,24 +3,29 @@
   (:require [clojure
              [data :as data]
              [pprint :refer [pprint]]
+             [set :as set]
              [string :as str]
              [walk :as walk]]
-            [clojure.java.classpath :as classpath]
+            [clojure.java
+             [classpath :as classpath]
+             [io :as io]]
             [clojure.math.numeric-tower :as math]
             [clojure.tools.logging :as log]
             [clojure.tools.namespace.find :as ns-find]
+            [clojure.tools.reader.edn :as edn]
             [colorize.core :as colorize]
+            [flatland.ordered.map :refer [ordered-map]]
             [medley.core :as m]
             [metabase.config :as config]
             [metabase.util.i18n :refer [trs tru]]
-            [ring.util.codec :as codec])
-  (:import [java.io BufferedReader Reader]
-           [java.net InetAddress InetSocketAddress Socket]
+            [ring.util.codec :as codec]
+            [weavejester.dependency :as dep])
+  (:import [java.net InetAddress InetSocketAddress Socket]
            [java.text Normalizer Normalizer$Form]
            java.util.concurrent.TimeoutException
            java.util.Locale
            javax.xml.bind.DatatypeConverter
-           org.apache.commons.validator.routines.UrlValidator))
+           [org.apache.commons.validator.routines RegexValidator UrlValidator]))
 
 ;; This is the very first log message that will get printed.
 ;;
@@ -55,41 +60,6 @@
   [& body]
   `(try ~@body (catch Throwable ~'_)))
 
-;;; ## Etc
-
-(defprotocol ^:private IClobToStr
-  (jdbc-clob->str ^String [this]
-   "Convert a Postgres/H2/SQLServer JDBC Clob to a string. (If object isn't a Clob, this function returns it as-is.)"))
-
-(extend-protocol IClobToStr
-  nil     (jdbc-clob->str [_]    nil)
-  Object  (jdbc-clob->str [this] this)
-
-  org.postgresql.util.PGobject
-  (jdbc-clob->str [this] (.getValue this))
-
-  ;; H2 + SQLServer clobs both have methods called `.getCharacterStream` that officially return a `Reader`,
-  ;; but in practice I've only seen them return a `BufferedReader`. Just to be safe include a method to convert
-  ;; a plain `Reader` to a `BufferedReader` so we don't get caught with our pants down
-  Reader
-  (jdbc-clob->str [this]
-    (jdbc-clob->str (BufferedReader. this)))
-
-  ;; Read all the lines for the `BufferedReader` and combine into a single `String`
-  BufferedReader
-  (jdbc-clob->str [this]
-    (with-open [_ this]
-      (loop [acc []]
-        (if-let [line (.readLine this)]
-          (recur (conj acc line))
-          (str/join "\n" acc)))))
-
-  ;; H2 -- See also http://h2database.com/javadoc/org/h2/jdbc/JdbcClob.html
-  org.h2.jdbc.JdbcClob
-  (jdbc-clob->str [this]
-    (jdbc-clob->str (.getCharacterStream this))))
-
-
 (defn optional
   "Helper function for defining functions that accept optional arguments. If `pred?` is true of the first item in `args`,
   a pair like `[first-arg other-args]` is returned; otherwise, a pair like `[default other-args]` is returned.
@@ -115,7 +85,7 @@
 
     (u/varargs String)
     (u/varargs String [\"A\" \"B\"])"
-  {:style/indent 1}
+  {:style/indent 1, :arglists '([klass] [klass xs])}
   [klass & [objects]]
   (vary-meta `(into-array ~klass ~objects)
              assoc :tag (format "[L%s;" (.getCanonicalName ^Class (ns-resolve *ns* klass)))))
@@ -130,7 +100,9 @@
 (defn url?
   "Is `s` a valid HTTP/HTTPS URL string?"
   ^Boolean [s]
-  (let [validator (UrlValidator. (varargs String ["http" "https"]) UrlValidator/ALLOW_LOCAL_URLS)]
+  (let [validator (UrlValidator. (varargs String ["http" "https"])
+                                 (RegexValidator. "^\\p{Alnum}+([\\.|\\-]\\p{Alnum}+)*(:\\d*)?")
+                                 UrlValidator/ALLOW_LOCAL_URLS)]
     (.isValid validator (str s))))
 
 (defn maybe?
@@ -181,7 +153,7 @@
     (catch Throwable _ false)))
 
 (defn ^:deprecated rpartial
-  "Like `partial`, but applies additional args *before* BOUND-ARGS.
+  "Like `partial`, but applies additional args *before* `bound-args`.
    Inspired by [`-rpartial` from dash.el](https://github.com/magnars/dash.el#-rpartial-fn-rest-args)
 
     ((partial - 5) 8)  -> (- 5 8) -> -3
@@ -310,6 +282,7 @@
          (some->> last-mb-frame (str "--> "))
          frames-before-last-mb))))})
 
+(declare format-milliseconds)
 
 (defn deref-with-timeout
   "Call `deref` on a something derefable (e.g. a future or promise), and throw an exception if it takes more than
@@ -319,33 +292,38 @@
     (when (= result ::timeout)
       (when (instance? java.util.concurrent.Future reff)
         (future-cancel reff))
-      (throw (TimeoutException. (str (tru "Timed out after {0} milliseconds." timeout-ms)))))
+      (throw (TimeoutException. (tru "Timed out after {0}" (format-milliseconds timeout-ms)))))
     result))
+
+(defn do-with-timeout
+  "Impl for `with-timeout` macro."
+  [timeout-ms f]
+  (let [result (deref-with-timeout
+                (future
+                  (try
+                    (f)
+                    (catch Throwable e
+                      e)))
+                timeout-ms)]
+    (if (instance? Throwable result)
+      (throw result)
+      result)))
 
 (defmacro with-timeout
   "Run `body` in a `future` and throw an exception if it fails to complete after `timeout-ms`."
   [timeout-ms & body]
-  `(deref-with-timeout (future ~@body) ~timeout-ms))
+  `(do-with-timeout ~timeout-ms (fn [] ~@body)))
 
 (defn round-to-decimals
-  "Round (presumabily floating-point) NUMBER to DECIMAL-PLACE. Returns a `Double`.
+  "Round (presumabily floating-point) `number` to `decimal-place`. Returns a `Double`.
 
      (round-to-decimals 2 35.5058998M) -> 35.51"
   ^Double [^Integer decimal-place, ^Number number]
   {:pre [(integer? decimal-place) (number? number)]}
   (double (.setScale (bigdec number) decimal-place BigDecimal/ROUND_HALF_UP)))
 
-(defn ^:deprecated drop-first-arg
-  "Returns a new fn that drops its first arg and applies the rest to the original.
-   Useful for creating `extend` method maps when you don't care about the `this` param. :flushed:
-
-     ((drop-first-arg :value) xyz {:value 100}) -> (apply :value [{:value 100}]) -> 100"
-  ^clojure.lang.IFn [^clojure.lang.IFn f]
-  (comp (partial apply f) rest list))
-
-
 (defn- check-protocol-impl-method-map
-  "Check that the methods expected for PROTOCOL are all implemented by METHOD-MAP, and that no extra methods are
+  "Check that the methods expected for `protocol` are all implemented by `method-map`, and that no extra methods are
    provided. Used internally by `strict-extend`."
   [protocol method-map]
   (let [[missing-methods extra-methods] (data/diff (set (keys (:method-map protocol))) (set (keys method-map)))]
@@ -410,6 +388,24 @@
   (^String [s max-length]
    (str/join (take max-length (slugify s)))))
 
+(defn all-ex-data
+  "Like `ex-data`, but merges `ex-data` from causes. If duplicate keys exist, the keys from the highest level are
+  preferred.
+
+    (def e (ex-info \"A\" {:a true, :both \"a\"} (ex-info \"B\" {:b true, :both \"A\"})))
+
+    (ex-data e)
+    ;; -> {:a true, :both \"a\"}
+
+    (u/all-ex-data e)
+    ;; -> {:a true, :b true, :both \"a\"}"
+  [e]
+  (reduce
+   (fn [data e]
+     (merge (ex-data e) data))
+   nil
+   (take-while some? (iterate #(.getCause ^Throwable %) e))))
+
 (defn do-with-auto-retries
   "Execute `f`, a function that takes no arguments, and return the results.
    If `f` fails with an exception, retry `f` up to `num-retries` times until it succeeds.
@@ -419,14 +415,20 @@
   [num-retries f]
   (if (<= num-retries 0)
     (f)
-    (try (f)
-         (catch Throwable e
-           (log/warn (format-color 'red "auto-retry %s: %s" f (.getMessage e)))
-           (do-with-auto-retries (dec num-retries) f)))))
+    (try
+      (f)
+      (catch Throwable e
+        (when (::no-auto-retry? (all-ex-data e))
+          (throw e))
+        (log/warn (format-color 'red "auto-retry %s: %s" f (.getMessage e)))
+        (do-with-auto-retries (dec num-retries) f)))))
 
 (defmacro auto-retry
-  "Execute `body` and return the results.
-   If `body` fails with an exception, retry execution up to `num-retries` times until it succeeds."
+  "Execute `body` and return the results. If `body` fails with an exception, retry execution up to `num-retries` times
+  until it succeeds.
+
+  You can disable auto-retries for a specific ExceptionInfo by including `{:metabase.util/no-auto-retry? true}` in its
+  data (or the data of one of its causes.)"
   {:style/indent 1}
   [num-retries & body]
   `(do-with-auto-retries ~num-retries
@@ -443,13 +445,17 @@
   [f coll]
   (into {} (map (juxt f identity)) coll))
 
-(defn keyword->qualified-name
-  "Return keyword K as a string, including its namespace, if any (unlike `name`).
+(defn qualified-name
+  "Return `k` as a string, qualified by its namespace, if any (unlike `name`). Handles `nil` values gracefully as well
+  (also unlike `name`).
 
-     (keyword->qualified-name :type/FK) ->  \"type/FK\""
+     (u/qualified-name :type/FK) -> \"type/FK\""
   [k]
-  (when k
-    (str/replace (str k) #"^:" "")))
+  (when (some? k)
+    (if-let [namespac (when (instance? clojure.lang.Named k)
+                        (namespace k))]
+      (str namespac "/" (name k))
+      (name k))))
 
 (defn id
   "If passed an integer ID, returns it. If passed a map containing an `:id` key, returns the value if it is an integer.
@@ -474,25 +480,56 @@
   ;; TODO - lots of functions can be rewritten to use this, which would make them more flexible
   ^Integer [object-or-id]
   (or (id object-or-id)
-      (throw (Exception. (str (tru "Not something with an ID: {0}" object-or-id))))))
+      (throw (Exception. (tru "Not something with an ID: {0}" object-or-id)))))
+
+(defn- metabase-namespace-symbs* []
+  (vec (sort (for [ns-symb (ns-find/find-namespaces (classpath/system-classpath))
+                   :when   (and (.startsWith (name ns-symb) "metabase.")
+                                (not (.contains (name ns-symb) "test")))]
+               ns-symb))))
+
+(def ^:private namespace-symbs-filename "namespaces.edn")
+
+(when *compile-files*
+  (let [filename (str "resources/" namespace-symbs-filename)]
+    (printf "Saving list of Metabase namespaces to %s...\n" filename)
+    (spit filename (with-out-str (pprint (metabase-namespace-symbs*))))))
 
 (def metabase-namespace-symbols
-  "Delay to a vector of symbols of all Metabase namespaces, excluding test namespaces.
-   This is intended for use by various routines that load related namespaces, such as task and events initialization.
-   Using `ns-find/find-namespaces` is fairly slow, and can take as much as half a second to iterate over the thousand
-   or so namespaces that are part of the Metabase project; use this instead for a massive performance increase."
-  ;; We want to give JARs in the ./plugins directory a chance to load. At one point we have this as a future so it
-  ;; start looking for things in the background while other stuff is happening but that meant plugins couldn't
-  ;; introduce new Metabase namespaces such as drivers.
-  (delay (vec (for [ns-symb (ns-find/find-namespaces (classpath/system-classpath))
-                    :when   (and (.startsWith (name ns-symb) "metabase.")
-                                 (not (.contains (name ns-symb) "test")))]
-                ns-symb))))
+  "Delay to a vector of symbols of all Metabase namespaces, excluding test namespaces. This is intended for use by
+  various routines that load related namespaces, such as task and events initialization."
+  ;; When building the uberjar we'll determine the symbols ahead of time ans save to an EDN file which will speed up
+  ;; initialization a bit and also fix an issue where the sequence would be empty if `:omit-source` was enabled.
+  ;; `ns-find` looks for Clojure source files.
+  ;;
+  ;; Use a delay for dev runs since `ns-find` is slow and can take several seconds or more
+  (if config/is-prod?
+    (delay
+      (try
+        (log/info (trs "Reading Metabase namespaces from {0}" namespace-symbs-filename))
+        (edn/read-string (slurp (io/resource namespace-symbs-filename)))
+        (catch Throwable e
+          (log/error e (trs "Failed to read Metabase namespaces from {0}" namespace-symbs-filename))
+          (metabase-namespace-symbs*))))
+    (delay
+      (metabase-namespace-symbs*))))
 
 (def ^java.util.regex.Pattern uuid-regex
   "A regular expression for matching canonical string representations of UUIDs."
   #"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")
 
+(defn one-or-many
+  "Wraps a single element in a sequence; returns sequences as-is. In lots of situations we'd like to accept either a
+  single value or a collection of values as an argument to a function, and then loop over them; rather than repeat
+  logic to check whether something is a collection and wrap if not everywhere, this utility function is provided for
+  your convenience.
+
+    (u/one-or-many 1)     ; -> [1]
+    (u/one-or-many [1 2]) ; -> [1 2]"
+  [arg]
+  (if ((some-fn sequential? set? nil?) arg)
+    arg
+    [arg]))
 
 (defn select-nested-keys
   "Like `select-keys`, but can also handle nested keypaths:
@@ -506,7 +543,7 @@
   [m keyseq]
   ;; TODO - use (empty m) once supported by model instances
   (into {} (for [k     keyseq
-                 :let  [[k & nested-keys] (if (sequential? k) k [k])
+                 :let  [[k & nested-keys] (one-or-many k)
                         v                 (get m k)]
                  :when (contains? m k)]
              {k (if-not (seq nested-keys)
@@ -598,15 +635,6 @@
                          (when (pred x) i))
                        coll)))
 
-
-(defn is-java-9-or-higher?
-  "Are we running on Java 9 or above?"
-  ([]
-   (is-java-9-or-higher? (System/getProperty "java.version")))
-  ([java-version-str]
-   (when-let [[_ java-major-version-str] (re-matches #"^(?:1\.)?(\d+).*$" java-version-str)]
-     (>= (Integer/parseInt java-major-version-str) 9))))
-
 (defn hexadecimal-string?
   "Returns truthy if `new-value` is a hexadecimal-string"
   [new-value]
@@ -633,19 +661,6 @@
   "Convert the keys in a map from `lisp-case` to `snake-case`."
   [m]
   (recursive-map-keys snake-key m))
-
-(defn one-or-many
-  "Wraps a single element in a sequence; returns sequences as-is. In lots of situations we'd like to accept either a
-  single value or a collection of values as an argument to a function, and then loop over them; rather than repeat
-  logic to check whether something is a collection and wrap if not everywhere, this utility function is provided for
-  your convenience.
-
-    (u/one-or-many 1)     ; -> [1]
-    (u/one-or-many [1 2]) ; -> [1 2]"
-  [arg]
-  (if ((some-fn sequential? set?) arg)
-    arg
-    [arg]))
 
 (def ^:private do-with-us-locale-lock (Object.))
 
@@ -692,25 +707,145 @@
   [& body]
   `(do-with-us-locale (fn [] ~@body)))
 
-(defn xor
-  "Exclusive or. (Because this is implemented as a function, rather than a macro, it is not short-circuting the way `or`
-  is.)"
-  [x y & more]
-  (loop [[x y & more] (into [x y] more)]
-    (cond
-      (and x y)
-      false
+(defn topological-sort
+  "Topologically sorts vertexs in graph g. Graph is a map of vertexs to edges. Optionally takes an
+   additional argument `edge-fn`, a function used to extract edges. Returns data in the same shape
+   (a graph), only sorted.
 
-      (seq more)
-      (recur (cons (or x y) more))
+   Say you have a graph shaped like:
 
-      :else
-      (or x y))))
+     a     b
+     | \\  |
+     c  |  |
+     \\ | /
+        d
+        |
+        e
 
-(defn xor-pred
-  "Takes a set of predicates and returns a function that is true if *exactly one* of its composing predicates returns a
-  logically true value. Compare to `every-pred`."
-  [& preds]
-  (fn [& args]
-    (apply xor (for [pred preds]
-                 (apply pred args)))))
+   (u/topological-sort identity {:b []
+                                 :c [:a]
+                                 :e [:d]
+                                 :d [:a :b :c]
+                                 :a []})
+
+   => (ordered-map :a [] :b [] :c [:a] :d [:a :b :c] :e [:d])
+
+   If the graph has cycles, throws an exception.
+
+   https://en.wikipedia.org/wiki/Topological_sorting"
+  ([g] (topological-sort identity g))
+  ([edges-fn g]
+   (transduce (map (juxt key (comp edges-fn val)))
+              (fn
+                ([] (dep/graph))
+                ([acc [vertex edges]]
+                 (reduce (fn [acc edge]
+                           (dep/depend acc vertex edge))
+                         acc
+                         edges))
+                ([acc]
+                 (let [sorted      (filter g (dep/topo-sort acc))
+                       independent (set/difference (set (keys g)) (set sorted))]
+                   (not-empty
+                    (into (ordered-map)
+                          (map (fn [vertex]
+                                 [vertex (g vertex)]))
+                          (concat independent sorted))))))
+              g)))
+
+(defn lower-case-en
+  "Locale-agnostic version of `clojure.string/lower-case`.
+  `clojure.string/lower-case` uses the default locale in conversions, turning
+  `ID` into `ıd`, in the Turkish locale. This function always uses the
+  `Locale/US` locale."
+  [^CharSequence s]
+  (.. s toString (toLowerCase (Locale/US))))
+
+(defn lower-case-map-keys
+  "Changes the keys of a given map to lower case."
+  [m]
+  (into {} (for [[k v] m]
+             [(-> k name lower-case-en keyword) v])))
+
+(defn format-nanoseconds
+  "Format a time interval in nanoseconds to something more readable. (µs/ms/etc.)"
+  ^String [nanoseconds]
+  ;; The basic idea is to take `n` and see if it's greater than the divisior. If it is, we'll print it out as that
+  ;; unit. If more, we'll divide by the divisor and recur, trying each successively larger unit in turn. e.g.
+  ;;
+  ;; (format-nanoseconds 500)    ; -> "500 ns"
+  ;; (format-nanoseconds 500000) ; -> "500 µs"
+  (loop [n nanoseconds, [[unit divisor] & more] [[:ns 1000] [:µs 1000] [:ms 1000] [:s 60] [:mins 60] [:hours 24]
+                                                 [:days 7] [:weeks (/ 365.25 7)] [:years Double/POSITIVE_INFINITY]]]
+    (if (and (> n divisor)
+             (seq more))
+      (recur (/ n divisor) more)
+      (format "%.1f %s" (double n) (name unit)))))
+
+(defn format-microseconds
+  "Format a time interval in microseconds into something more readable."
+  ^String [microseconds]
+  (format-nanoseconds (* 1000.0 microseconds)))
+
+(defn format-milliseconds
+  "Format a time interval in milliseconds into something more readable."
+  ^String [milliseconds]
+  (format-microseconds (* 1000.0 milliseconds)))
+
+(defn format-seconds
+  "Format a time interval in seconds into something more readable."
+  ^String [seconds]
+  (format-milliseconds (* 1000.0 seconds)))
+
+(defmacro profile
+  "Like `clojure.core/time`, but lets you specify a `message` that gets printed with the total time, and formats the
+  time nicely using `format-nanoseconds`."
+  {:style/indent 1}
+  ([form]
+   `(profile ~(str form) ~form))
+  ([message & body]
+   `(let [start-time# (System/nanoTime)]
+      (u/prog1 (do ~@body)
+        (println (u/format-color '~'green "%s took %s"
+                   ~message
+                   (format-nanoseconds (- (System/nanoTime) start-time#))))))))
+
+(defn seconds->ms
+  "Convert `seconds` to milliseconds. More readable than doing this math inline."
+  [seconds]
+  (* seconds 1000))
+
+(defn minutes->seconds
+  "Convert `minutes` to seconds. More readable than doing this math inline."
+  [minutes]
+  (* 60 minutes))
+
+(defn minutes->ms
+  "Convert `minutes` to milliseconds. More readable than doing this math inline."
+  [minutes]
+  (-> minutes minutes->seconds seconds->ms))
+
+(defn parse-currency
+  "Parse a currency String to a BigDecimal. Handles a variety of different formats, such as:
+
+    $1,000.00
+    -£127.54
+    -127,54 €
+    kr-127,54
+    € 127,54-
+    ¥200"
+  ^java.math.BigDecimal [^String s]
+  (when-not (str/blank? s)
+    (bigdec
+     (reduce
+      (partial apply str/replace)
+      s
+      [
+       ;; strip out any current symbols
+       [#"[^\d,.-]+"          ""]
+       ;; now strip out any thousands separators
+       [#"(?<=\d)[,.](\d{3})" "$1"]
+       ;; now replace a comma decimal seperator with a period
+       [#","                  "."]
+       ;; move minus sign at end to front
+       [#"(^[^-]+)-$"         "-$1"]]))))

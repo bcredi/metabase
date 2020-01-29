@@ -11,9 +11,7 @@
              [interface :as qp.i]
              [util :as qputil]]
             [metabase.util :as u]
-            [metabase.util
-             [date :as du]
-             [i18n :refer [trs tru]]]
+            [metabase.util.i18n :refer [deferred-tru trs tru]]
             [toucan.db :as db]))
 
 (defn- add-running-time [{start-time-ms :start_time_millis, :as query-execution}]
@@ -64,12 +62,11 @@
    {:status    :failed
     :error     message
     :row_count 0
-    :data      {:rows    []
-                :cols    []
-                :columns []}}
+    :data      {:rows []
+                :cols []}}
    ;; include stacktrace and preprocessed/native stages of the query if available in the response which should
    ;; make debugging queries a bit easier
-   (-> (select-keys result [:stacktrace :preprocessed :native])
+   (-> (select-keys result [:stacktrace :preprocessed :native :error_type])
        (m/dissoc-in [:preprocessed :info]))))
 
 
@@ -93,10 +90,10 @@
     ;; if the result itself is invalid there's something wrong in the QP -- not just with the query. Pass an
     ;; Exception up to the top-level handler; this is basically a 500 situation
     (nil? result)
-    (raise (Exception. (str (trs "Unexpected nil response from query processor."))))
+    (raise (Exception. (trs "Unexpected nil response from query processor.")))
 
     (not status)
-    (raise (Exception. (str (tru "Invalid response from database driver. No :status provided.")
+    (raise (Exception. (str (deferred-tru "Invalid response from database driver. No :status provided.")
                             " "
                             result)))
 
@@ -143,7 +140,7 @@
    :hash              query-hash
    :native            (= (keyword query-type) :native)
    :json_query        (dissoc query :info)
-   :started_at        (du/new-sql-timestamp)
+   :started_at        :%now
    :running_time      0
    :result_rows       0
    :start_time_millis (System/currentTimeMillis)})

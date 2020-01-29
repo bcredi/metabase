@@ -39,12 +39,12 @@ export function computeFilterTimeRange(filter) {
     expandedFilter = filter;
   }
 
-  let [operator, field, ...values] = expandedFilter;
-  let bucketing = parseFieldBucketing(field, "day");
+  const [operator, field, ...values] = expandedFilter;
+  const bucketing = parseFieldBucketing(field, "day");
 
   let start, end;
   if (operator === "=" && values[0]) {
-    let point = absolute(values[0]);
+    const point = absolute(values[0]);
     start = point.clone().startOf(bucketing);
     end = point.clone().endOf(bucketing);
   } else if (operator === ">" && values[0]) {
@@ -76,7 +76,7 @@ export function expandTimeIntervalFilter(filter) {
     n = 1;
   }
 
-  field = ["datetime-field", field, "as", unit];
+  field = ["datetime-field", field, unit];
 
   if (n < -1) {
     return [
@@ -100,11 +100,11 @@ export function expandTimeIntervalFilter(filter) {
 }
 
 export function generateTimeFilterValuesDescriptions(filter) {
-  let [operator, field, ...values] = filter;
-  let bucketing = parseFieldBucketing(field);
+  const [operator, field, ...values] = filter;
+  const bucketing = parseFieldBucketing(field);
 
   if (operator === "time-interval") {
-    let [n, unit] = values;
+    const [n, unit] = values;
     return generateTimeIntervalDescription(n, unit);
   } else {
     return values.map(value => generateTimeValueDescription(value, bucketing));
@@ -189,6 +189,9 @@ export function generateTimeValueDescription(value, bucketing) {
 }
 
 export function formatBucketing(bucketing = "", n = 1) {
+  if (!bucketing) {
+    return "";
+  }
   switch (bucketing) {
     case "default":
       return ngettext(msgid`Default period`, `Default periods`, n);
@@ -223,7 +226,7 @@ export function formatBucketing(bucketing = "", n = 1) {
     case "quarter-of-year":
       return ngettext(msgid`Quarter of year`, `Quarters of year`, n);
   }
-  let words = bucketing.split("-");
+  const words = bucketing.split("-");
   words[0] = inflection.capitalize(words[0]);
   return words.join(" ");
 }
@@ -280,7 +283,7 @@ export function parseFieldTargetId(field) {
       return field[1];
     }
     if (field[0] === "fk->") {
-      return field[1];
+      return parseFieldTargetId(field[1]);
     }
     if (field[0] === "datetime-field") {
       return parseFieldTargetId(field[1]);

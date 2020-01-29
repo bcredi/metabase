@@ -12,7 +12,7 @@ import {
   waitForAllRequestsToComplete,
   cleanup,
   eventually,
-} from "__support__/e2e_tests";
+} from "__support__/e2e";
 
 import jwt from "jsonwebtoken";
 
@@ -97,7 +97,7 @@ describe("parameters", () => {
     await store.dispatch(fetchTableMetadata(1));
     const metadata = getMetadata(store.getState());
 
-    let unsavedQuestion = Question.create({
+    const unsavedQuestion = Question.create({
       databaseId: 1,
       metadata,
     })
@@ -224,8 +224,11 @@ describe("parameters", () => {
       store.pushPath(Urls.question(question.id()) + "?id=1");
       app = mount(store.getAppContainer());
 
-      await waitForRequestToComplete("GET", /^\/api\/card\/\d+/);
-      expect(app.find(".Header-title-name").text()).toEqual("Test Question");
+      await Promise.all([
+        waitForRequestToComplete("GET", /^\/api\/database.*include_tables/),
+        waitForRequestToComplete("GET", /^\/api\/card\/\d+/),
+      ]);
+      expect(app.find("ViewHeading").text()).toEqual("Test Question");
 
       // wait for the query to load
       await waitForRequestToComplete("POST", /^\/api\/card\/\d+\/query/);

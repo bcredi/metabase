@@ -5,13 +5,13 @@ import _ from "underscore";
 import { assoc, assocIn } from "icepick";
 import { t } from "ttag";
 
-import RecipientPicker from "./RecipientPicker.jsx";
+import RecipientPicker from "./RecipientPicker";
 
-import SchedulePicker from "metabase/components/SchedulePicker.jsx";
-import ActionButton from "metabase/components/ActionButton.jsx";
-import Select, { Option } from "metabase/components/Select.jsx";
-import Toggle from "metabase/components/Toggle.jsx";
-import Icon from "metabase/components/Icon.jsx";
+import SchedulePicker from "metabase/components/SchedulePicker";
+import ActionButton from "metabase/components/ActionButton";
+import Select, { Option } from "metabase/components/Select";
+import Toggle from "metabase/components/Toggle";
+import Icon from "metabase/components/Icon";
 import ChannelSetupMessage from "metabase/components/ChannelSetupMessage";
 
 import MetabaseAnalytics from "metabase/lib/analytics";
@@ -47,14 +47,14 @@ export default class PulseEditChannels extends Component {
   static defaultProps = {};
 
   addChannel(type) {
-    let { pulse, formInput } = this.props;
+    const { pulse, formInput } = this.props;
 
-    let channelSpec = formInput.channels[type];
+    const channelSpec = formInput.channels[type];
     if (!channelSpec) {
       return;
     }
 
-    let channel = createChannel(channelSpec);
+    const channel = createChannel(channelSpec);
 
     this.props.setPulse({ ...pulse, channels: pulse.channels.concat(channel) });
 
@@ -66,13 +66,13 @@ export default class PulseEditChannels extends Component {
   }
 
   removeChannel(index) {
-    let { pulse } = this.props;
+    const { pulse } = this.props;
     this.props.setPulse(assocIn(pulse, ["channels", index, "enabled"], false));
   }
 
   onChannelPropertyChange(index, name, value) {
-    let { pulse } = this.props;
-    let channels = [...pulse.channels];
+    const { pulse } = this.props;
+    const channels = [...pulse.channels];
 
     channels[index] = { ...channels[index], [name]: value };
 
@@ -82,8 +82,8 @@ export default class PulseEditChannels extends Component {
   // changedProp contains the schedule property that user just changed
   // newSchedule may contain also other changed properties as some property changes reset other properties
   onChannelScheduleChange(index, newSchedule, changedProp) {
-    let { pulse } = this.props;
-    let channels = [...pulse.channels];
+    const { pulse } = this.props;
+    const channels = [...pulse.channels];
 
     MetabaseAnalytics.trackEvent(
       this.props.pulseId ? "PulseEdit" : "PulseCreate",
@@ -136,15 +136,11 @@ export default class PulseEditChannels extends Component {
   }
 
   willPulseSkip = () => {
-    let cards = _.pluck(this.props.pulse.cards, "id");
-    let cardPreviews = this.props.cardPreviews;
-    let previews = _.map(cards, function(id) {
-      return _.find(cardPreviews, function(card) {
-        return id == card.id;
-      });
-    });
-    let types = _.pluck(previews, "pulse_card_type");
-    let empty = _.isEqual(_.uniq(types), ["empty"]);
+    const cards = _.pluck(this.props.pulse.cards, "id");
+    const cardPreviews = this.props.cardPreviews;
+    const previews = _.map(cards, id => _.findWhere(cardPreviews, { id }));
+    const types = _.pluck(previews, "pulse_card_type");
+    const empty = _.isEqual(_.uniq(types), ["empty"]);
     return empty && this.props.pulse.skip_if_empty;
   };
 
@@ -182,7 +178,7 @@ export default class PulseEditChannels extends Component {
   }
 
   renderChannel(channel, index, channelSpec) {
-    let isValid =
+    const isValid =
       this.props.pulseIsValid && channelIsValid(channel, channelSpec);
     return (
       <li key={index} className="py2">
@@ -192,7 +188,7 @@ export default class PulseEditChannels extends Component {
         {channelSpec.recipients && (
           <div>
             <div className="h4 text-bold mb1">
-              {this.props.emailRecipientText || "To:"}
+              {this.props.emailRecipientText || t`To:`}
             </div>
             <RecipientPicker
               isNewPulse={this.props.pulseId === undefined}
@@ -255,8 +251,8 @@ export default class PulseEditChannels extends Component {
   }
 
   renderChannelSection(channelSpec) {
-    let { pulse, user } = this.props;
-    let channels = pulse.channels
+    const { pulse, user } = this.props;
+    const channels = pulse.channels
       .map((c, i) => [c, i])
       .filter(([c, i]) => c.enabled && c.channel_type === channelSpec.type)
       .map(([channel, index]) =>
@@ -283,9 +279,7 @@ export default class PulseEditChannels extends Component {
           <ul className="bg-light px3">{channels}</ul>
         ) : channels.length > 0 && !channelSpec.configured ? (
           <div className="p4 text-centered">
-            <h3 className="mb2">{t`${
-              channelSpec.name
-            } needs to be set up by an administrator.`}</h3>
+            <h3 className="mb2">{t`${channelSpec.name} needs to be set up by an administrator.`}</h3>
             <ChannelSetupMessage user={user} channels={[channelSpec.name]} />
           </div>
         ) : null}
@@ -294,9 +288,9 @@ export default class PulseEditChannels extends Component {
   }
 
   render() {
-    let { formInput } = this.props;
+    const { formInput } = this.props;
     // Default to show the default channels until full formInput is loaded
-    let channels = formInput.channels || {
+    const channels = formInput.channels || {
       email: { name: t`Email`, type: "email" },
       slack: { name: t`Slack`, type: "slack" },
     };

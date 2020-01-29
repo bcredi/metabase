@@ -1,7 +1,11 @@
 import {
   dimensionIsTimeseries,
   computeTimeseriesDataInverval,
+  getTimezone,
 } from "metabase/visualizations/lib/timeseries";
+import { getVisualizationTransformed } from "metabase/visualizations";
+
+import { StringColumn, NumberColumn } from "../__support__/visualizations";
 
 import { TYPE } from "metabase/lib/types";
 
@@ -132,16 +136,39 @@ describe("visualization.lib.timeseries", () => {
         10,
         [["2015-01-01T00:00:00.000Z"], ["2025-01-01T00:00:00.000Z"]],
       ],
+      ["day", 1, [["2019-01-01T00:00:00.000Z"]]],
     ];
 
     TEST_CASES.map(([expectedInterval, expectedCount, data]) => {
       it("should return " + expectedCount + " " + expectedInterval, () => {
-        let { interval, count } = computeTimeseriesDataInverval(
+        const { interval, count } = computeTimeseriesDataInverval(
           data.map(d => new Date(d)),
         );
         expect(interval).toBe(expectedInterval);
         expect(count).toBe(expectedCount);
       });
+    });
+  });
+
+  describe("getTimezone", () => {
+    const series = [
+      {
+        card: { visualization_settings: {}, display: "bar" },
+        data: {
+          results_timezone: "US/Eastern",
+          cols: [StringColumn({ name: "a" }), NumberColumn({ name: "b" })],
+          rows: [],
+        },
+      },
+    ];
+    it("should extract results_timezone", () => {
+      const timezone = getTimezone(series);
+      expect(timezone).toBe("US/Eastern");
+    });
+    it("should extract results_timezone after series is transformed", () => {
+      const { series: transformed } = getVisualizationTransformed(series);
+      const timezone = getTimezone(transformed);
+      expect(timezone).toBe("US/Eastern");
     });
   });
 });

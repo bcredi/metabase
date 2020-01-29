@@ -1,14 +1,10 @@
-import "__support__/mocks";
-// requried to get dashboard to render
-jest.mock("metabase/components/ExplicitSize");
-
 import {
   BROWSER_HISTORY_PUSH,
   createTestStore,
   useSharedAdminLogin,
   cleanup,
-} from "__support__/e2e_tests";
-import { click, clickButton, setInputValue } from "__support__/enzyme_utils";
+} from "__support__/e2e";
+import { click, clickButton, setInputValue } from "__support__/enzyme";
 
 import { DashboardApi, PublicApi } from "metabase/services";
 import * as Urls from "metabase/lib/urls";
@@ -22,12 +18,14 @@ import {
   SAVE_DASHBOARD_AND_CARDS,
   SET_EDITING_DASHBOARD,
   SET_EDITING_PARAMETER_ID,
-  FETCH_REVISIONS,
   FETCH_CARD_DATA,
 } from "metabase/dashboard/dashboard";
 
 import Question from "metabase/entities/questions";
 import Search from "metabase/entities/search";
+import Revisions from "metabase/entities/revisions";
+
+import { updateSetting } from "metabase/admin/settings/settings";
 
 import EditBar from "metabase/components/EditBar";
 
@@ -41,7 +39,7 @@ import ParameterWidget from "metabase/parameters/components/ParameterWidget";
 import ParameterValueWidget from "metabase/parameters/components/ParameterValueWidget";
 import { PredefinedRelativeDatePicker } from "metabase/parameters/components/widgets/DateRelativeWidget";
 import HeaderModal from "metabase/components/HeaderModal";
-import { DashboardHistoryModal } from "metabase/dashboard/components/DashboardHistoryModal";
+import DashboardHistoryModal from "metabase/dashboard/components/DashboardHistoryModal";
 
 // TODO Atte Keinänen 7/17/17: When we have a nice way to create dashboards in tests, this could use a real saved dashboard
 // instead of mocking the API endpoint
@@ -71,7 +69,7 @@ const mockPublicDashboardResponse = {
         {
           parameter_id: "598ab323",
           card_id: 25,
-          target: ["dimension", ["fk->", 3, 21]],
+          target: ["dimension", ["fk->", ["field-id", 3], ["field-id", 21]]],
         },
       ],
       card_id: 25,
@@ -201,7 +199,7 @@ describe("Dashboard", () => {
       // Test parameter filter creation
       click(app.find(".Icon.Icon-pencil"));
       await store.waitForActions([SET_EDITING_DASHBOARD]);
-      click(app.find(".Icon.Icon-funneladd"));
+      click(app.find(".Icon.Icon-funnel_add"));
       // Choose Time filter type
       click(
         app
@@ -272,7 +270,9 @@ describe("Dashboard", () => {
 
       click(app.find(".Icon.Icon-history"));
 
-      await store.waitForActions([FETCH_REVISIONS]);
+      await store.waitForActions([Revisions.actionTypes.FETCH_LIST]);
+      await delay(10);
+
       const modal = app.find(DashboardHistoryModal);
       expect(modal.length).toBe(1);
       expect(store.getPath()).toBe(`${dashboardUrl}/history`);
@@ -289,7 +289,8 @@ describe("Dashboard", () => {
       const dashboardUrl = Urls.dashboard(dashboardId);
       store.pushPath(dashboardUrl + `/history`);
       const app = mount(store.getAppContainer());
-      await store.waitForActions([FETCH_REVISIONS]);
+      await store.waitForActions([Revisions.actionTypes.FETCH_LIST]);
+      await delay(10);
 
       const modal = app.find(DashboardHistoryModal);
       expect(modal.length).toBe(1);
@@ -354,6 +355,59 @@ describe("Dashboard", () => {
 
       await store.waitForActions([FETCH_DASHBOARD]);
       expect(app.find(".DashCard")).toHaveLength(1);
+    });
+
+    it("displays the correct embed snippets", async () => {
+      checkDashboardWasCreated();
+
+      const store = await createTestStore();
+      await store.dispatch(
+        updateSetting({ key: "enable-embedding", value: true }),
+      );
+
+      await store.dispatch(
+        updateSetting({
+          key: "embedding-secret-key",
+          value:
+            "2547733eb6a2fc0ff405f43ca94433b90b8f49aa2c667c39d3c7ce8750fcf1af",
+        }),
+      );
+
+      const dashboardUrl = Urls.dashboard(dashboardId);
+      store.pushPath(dashboardUrl);
+      const app = mount(store.getAppContainer());
+      await store.waitForActions([FETCH_DASHBOARD]);
+      app.findByIcon("share").click();
+      app.findByText("Embed this dashboard in an application").click();
+      app.findByText("Code").click();
+      const [js, html] = app.find("TextEditor").map(n => n.prop("value"));
+      expect(js)
+        .toBe(`// you will need to install via 'npm install jsonwebtoken' or in your package.json
+
+var jwt = require("jsonwebtoken");
+
+var METABASE_SITE_URL = "http://localhost:4000";
+var METABASE_SECRET_KEY = "2547733eb6a2fc0ff405f43ca94433b90b8f49aa2c667c39d3c7ce8750fcf1af";
+
+var payload = {
+  resource: { dashboard: ${dashboardId} },
+  params: {},
+  exp: Math.round(Date.now() / 1000) + (10 * 60) // 10 minute expiration
+};
+var token = jwt.sign(payload, METABASE_SECRET_KEY);
+
+var iframeUrl = METABASE_SITE_URL + "/embed/dashboard/" + token + "#bordered=true&titled=true";`);
+      expect(html).toBe(`<iframe
+    src="{{iframeUrl}}"
+    frameborder="0"
+    width="800"
+    height="600"
+    allowtransparency
+></iframe>`);
+
+      await store.dispatch(
+        updateSetting({ key: "enable-embedding", value: false }),
+      );
     });
   });
 });

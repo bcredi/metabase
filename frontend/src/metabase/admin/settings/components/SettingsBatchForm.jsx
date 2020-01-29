@@ -1,6 +1,6 @@
 import React, { Component } from "react";
 import PropTypes from "prop-types";
-
+import { connect } from "react-redux";
 import _ from "underscore";
 
 import Collapse from "react-collapse";
@@ -10,6 +10,8 @@ import Button from "metabase/components/Button";
 import DisclosureTriangle from "metabase/components/DisclosureTriangle";
 import MetabaseUtils from "metabase/lib/utils";
 import SettingsSetting from "./SettingsSetting";
+
+import { updateSettings } from "../settings";
 
 const VALIDATIONS = {
   email: {
@@ -22,12 +24,16 @@ const VALIDATIONS = {
   },
 };
 
-let SAVE_SETTINGS_BUTTONS_STATES = {
+const SAVE_SETTINGS_BUTTONS_STATES = {
   default: t`Save changes`,
   working: t`Saving...`,
   success: t`Changes saved!`,
 };
 
+@connect(
+  null,
+  { updateSettings },
+)
 export default class SettingsBatchForm extends Component {
   constructor(props, context) {
     super(props, context);
@@ -56,7 +62,7 @@ export default class SettingsBatchForm extends Component {
   }
 
   updateFormData(props) {
-    let formData = {};
+    const formData = {};
     for (const element of props.elements) {
       formData[element.key] = element.value;
     }
@@ -101,11 +107,11 @@ export default class SettingsBatchForm extends Component {
   }
 
   validateForm() {
-    let { elements, enabledKey } = this.props;
-    let { formData } = this.state;
+    const { elements, enabledKey } = this.props;
+    const { formData } = this.state;
 
-    let valid = true,
-      validationErrors = {};
+    let valid = true;
+    const validationErrors = {};
 
     // Validate form only if LDAP is enabled
     if (!enabledKey || formData[enabledKey]) {
@@ -138,19 +144,34 @@ export default class SettingsBatchForm extends Component {
     }
   }
 
-  handleChangeEvent(key, value) {
-    this.setState(previousState => ({
-      dirty: true,
-      formData: {
+  handleChangeEvent = (key, value) => {
+    this.setState(previousState => {
+      const settingsValues = {
         ...previousState.formData,
-        [key]: MetabaseUtils.isEmpty(value) ? null : value,
-      },
-    }));
-  }
+        [key]: value,
+      };
+
+      // support "onChanged"
+      const setting = _.findWhere(this.props.elements, { key });
+      if (setting && setting.onChanged) {
+        setting.onChanged(
+          previousState.formData[key],
+          settingsValues[key],
+          settingsValues,
+          this.handleChangeEvent,
+        );
+      }
+
+      return {
+        dirty: true,
+        formData: settingsValues,
+      };
+    });
+  };
 
   handleFormErrors(error) {
     // parse and format
-    let formErrors = {};
+    const formErrors = {};
     if (error.data && error.data.message) {
       formErrors.message = error.data.message;
     } else {
@@ -167,7 +188,7 @@ export default class SettingsBatchForm extends Component {
   updateSettings = e => {
     e.preventDefault();
 
-    let { formData, valid } = this.state;
+    const { formData, valid } = this.state;
 
     if (valid) {
       this.setState({
@@ -215,11 +236,11 @@ export default class SettingsBatchForm extends Component {
         return null;
       }
       // merge together data from a couple places to provide a complete view of the Element state
-      let errorMessage =
+      const errorMessage =
         formErrors && formErrors.elements
           ? formErrors.elements[element.key]
           : validationErrors[element.key];
-      let value =
+      const value =
         formData[element.key] == null
           ? element.defaultValue
           : formData[element.key];
@@ -255,6 +276,10 @@ export default class SettingsBatchForm extends Component {
           ),
         )}
 
+        {formErrors && formErrors.message && (
+          <div className="m2 text-error text-bold">{formErrors.message}</div>
+        )}
+
         <div className="m2 mb4">
           <Button
             mr={1}
@@ -273,12 +298,6 @@ export default class SettingsBatchForm extends Component {
               disabled,
               dirty,
             })}
-
-          {formErrors && formErrors.message ? (
-            <span className="pl3 text-error text-bold">
-              {formErrors.message}
-            </span>
-          ) : null}
         </div>
       </div>
     );
@@ -312,7 +331,7 @@ class CollapsibleSection extends React.Component {
           onClick={this.handleToggle.bind(this)}
         >
           <div className="flex align-center">
-            <DisclosureTriangle open={show} />
+            <DisclosureTriangle className="mx1" open={show} />
             <h3>{title}</h3>
           </div>
         </div>

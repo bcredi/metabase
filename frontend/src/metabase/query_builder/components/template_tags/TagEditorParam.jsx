@@ -2,11 +2,13 @@ import React, { Component } from "react";
 import { t } from "ttag";
 import _ from "underscore";
 import { connect } from "react-redux";
+import { Link } from "react-router";
 
-import Toggle from "metabase/components/Toggle.jsx";
-import InputBlurChange from "metabase/components/InputBlurChange.jsx";
-import Select, { Option } from "metabase/components/Select.jsx";
-import ParameterValueWidget from "metabase/parameters/components/ParameterValueWidget.jsx";
+import Toggle from "metabase/components/Toggle";
+import Card from "metabase/components/Card";
+import InputBlurChange from "metabase/components/InputBlurChange";
+import Select, { Option } from "metabase/components/Select";
+import ParameterValueWidget from "metabase/parameters/components/ParameterValueWidget";
 
 import { parameterOptionsForField } from "metabase/meta/Dashboard";
 import type { TemplateTag } from "metabase/meta/types/Query";
@@ -17,6 +19,7 @@ import { fetchField } from "metabase/redux/metadata";
 import { getMetadata } from "metabase/selectors/metadata";
 import { SchemaTableAndFieldDataSelector } from "metabase/query_builder/components/DataSelector";
 import Metadata from "metabase-lib/lib/metadata/Metadata";
+import MetabaseSettings from "metabase/lib/settings";
 import type { FieldId } from "metabase/meta/types/Field";
 
 type Props = {
@@ -106,7 +109,7 @@ export default class TagEditorParam extends Component {
   render() {
     const { tag, database, databases, metadata } = this.props;
 
-    let widgetOptions,
+    let widgetOptions = [],
       table,
       fieldMetadataLoaded = false;
     if (tag.type === "dimension" && Array.isArray(tag.dimension)) {
@@ -122,26 +125,27 @@ export default class TagEditorParam extends Component {
     const isDimension = tag.type === "dimension";
     const hasSelectedDimensionField =
       isDimension && Array.isArray(tag.dimension);
+    const hasWidgetOptions = widgetOptions && widgetOptions.length > 0;
     return (
-      <div className="pb2 mb2 border-bottom border-dark">
-        <h3 className="pb2">{tag.name}</h3>
+      <Card className="p2 mb2">
+        <h3 className="pb2 text-brand">{tag.name}</h3>
 
-        <div className="pb1">
-          <h5 className="pb1 text-normal">{t`Filter label`}</h5>
+        <div className="pb3">
+          <h4 className="pb1">{t`Filter label`}</h4>
           <InputBlurChange
             type="text"
             value={tag["display-name"]}
-            className="AdminSelect p1 text-bold text-medium bordered border-med rounded full"
+            className="AdminSelect p1 text-bold text-dark bordered border-medium rounded full"
             onBlurChange={e =>
               this.setParameterAttribute("display-name", e.target.value)
             }
           />
         </div>
 
-        <div className="pb1">
-          <h5 className="pb1 text-normal">{t`Variable type`}</h5>
+        <div className="pb3">
+          <h4 className="pb1">{t`Variable type`}</h4>
           <Select
-            className="border-med bg-white block"
+            className="border-medium bg-white block"
             value={tag.type}
             onChange={e => this.setType(e.target.value)}
             isInitiallyOpen={!tag.type}
@@ -156,8 +160,13 @@ export default class TagEditorParam extends Component {
         </div>
 
         {tag.type === "dimension" && (
-          <div className="pb1">
-            <h5 className="pb1 text-normal">{t`Field to map to`}</h5>
+          <div className="pb3">
+            <h4 className="pb1">
+              {t`Field to map to`}
+              {tag.dimension == null && (
+                <span className="text-error mx1">(required)</span>
+              )}
+            </h4>
 
             {(!hasSelectedDimensionField ||
               (hasSelectedDimensionField && fieldMetadataLoaded)) && (
@@ -176,16 +185,16 @@ export default class TagEditorParam extends Component {
           </div>
         )}
 
-        {widgetOptions && widgetOptions.length > 0 && (
-          <div className="pb1">
-            <h5 className="pb1 text-normal">{t`Filter widget type`}</h5>
+        {hasSelectedDimensionField && (
+          <div className="pb3">
+            <h4 className="pb1">{t`Filter widget type`}</h4>
             <Select
               className="border-med bg-white block"
               value={tag["widget-type"]}
               onChange={e =>
                 this.setParameterAttribute("widget-type", e.target.value)
               }
-              isInitiallyOpen={!tag["widget-type"]}
+              isInitiallyOpen={!tag["widget-type"] && hasWidgetOptions}
               placeholder={t`Select…`}
             >
               {[{ name: "None", type: undefined }]
@@ -196,11 +205,26 @@ export default class TagEditorParam extends Component {
                   </Option>
                 ))}
             </Select>
+            {!hasWidgetOptions && (
+              <p className="pb1">
+                {t`There aren't any filter widgets for this type of field yet.`}{" "}
+                <Link
+                  to={MetabaseSettings.docsUrl(
+                    "users-guide/13-sql-parameters",
+                    "the-field-filter-variable-type",
+                  )}
+                  target="_blank"
+                  className="link"
+                >
+                  {t`Learn more`}
+                </Link>
+              </p>
+            )}
           </div>
         )}
 
-        <div className="flex align-center pb1">
-          <h5 className="text-normal mr1">{t`Required?`}</h5>
+        <div className="pb2">
+          <h4 className="pb1">{t`Required?`}</h4>
           <Toggle
             value={tag.required}
             onChange={value => this.setRequired(value)}
@@ -209,8 +233,8 @@ export default class TagEditorParam extends Component {
 
         {((tag.type !== "dimension" && tag.required) ||
           (tag.type === "dimension" || tag["widget-type"])) && (
-          <div className="pb1">
-            <h5 className="pb1 text-normal">{t`Default filter widget value`}</h5>
+          <div className="pb2">
+            <h4 className="pb1">{t`Default filter widget value`}</h4>
             <ParameterValueWidget
               parameter={{
                 type:
@@ -219,13 +243,13 @@ export default class TagEditorParam extends Component {
               }}
               value={tag.default}
               setValue={value => this.setParameterAttribute("default", value)}
-              className="AdminSelect p1 text-bold text-medium bordered border-med rounded bg-white"
+              className="AdminSelect p1 text-bold text-medium bordered border-medium rounded bg-white"
               isEditing
               commitImmediately
             />
           </div>
         )}
-      </div>
+      </Card>
     );
   }
 }

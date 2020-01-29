@@ -4,7 +4,8 @@
     {:status 200
      :body (a/chan)}
 
-  and send strings (presumibly \n) as heartbeats to the client until the real results (a seq) is received, then stream
+  and send strings (presumibly
+) as heartbeats to the client until the real results (a seq) is received, then stream
   that to the client."
   (:require [cheshire.core :as json]
             [clojure.core.async :as a]
@@ -13,9 +14,7 @@
             [compojure.response :refer [Sendable]]
             [metabase.middleware.exceptions :as mw.exceptions]
             [metabase.util :as u]
-            [metabase.util
-             [date :as du]
-             [i18n :as ui18n :refer [trs]]]
+            [metabase.util.i18n :as ui18n :refer [trs]]
             [ring.core.protocols :as ring.protocols]
             [ring.util.response :as response])
   (:import clojure.core.async.impl.channels.ManyToManyChannel
@@ -149,15 +148,15 @@
 
               ;; Otherwise if we've been waiting longer than `absolute-max-keepalive-ms` it's time to call it quits
               exceeded-absolute-max-keepalive?
-              (a/>! output-chan (TimeoutException. (str (trs "No response after waiting {0}. Canceling request."
-                                                             (du/format-milliseconds absolute-max-keepalive-ms)))))
+              (a/>! output-chan (TimeoutException. (trs "No response after waiting {0}. Canceling request."
+                                                        (u/format-milliseconds absolute-max-keepalive-ms))))
 
               ;; if input-chan was unexpectedly closed log a message to that effect and return an appropriate error
               ;; rather than letting people wait forever
               input-chan-closed?
               (do
                 (log/error (trs "Input channel unexpectedly closed."))
-                (a/>! output-chan (InterruptedException. (str (trs "Input channel unexpectedly closed."))))))
+                (a/>! output-chan (InterruptedException. (trs "Input channel unexpectedly closed.")))))
             (finally
               (a/close! output-chan)
               (a/close! input-chan))))))))

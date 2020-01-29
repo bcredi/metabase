@@ -1,12 +1,14 @@
 import React, { Component } from "react";
 import PropTypes from "prop-types";
 
-import Icon from "metabase/components/Icon.jsx";
+import Icon from "metabase/components/Icon";
 
 import { t, ngettext, msgid } from "ttag";
 
 import _ from "underscore";
 import cx from "classnames";
+
+import { regexpEscape } from "metabase/lib/string";
 
 export default class MetadataTableList extends Component {
   constructor(props, context) {
@@ -30,33 +32,36 @@ export default class MetadataTableList extends Component {
     this.setState({
       searchText: event.target.value,
       searchRegex: event.target.value
-        ? new RegExp(RegExp.escape(event.target.value), "i")
+        ? new RegExp(regexpEscape(event.target.value), "i")
         : null,
     });
   }
 
   render() {
     let queryableTablesHeader, hiddenTablesHeader;
-    let queryableTables = [];
-    let hiddenTables = [];
+    const queryableTables = [];
+    const hiddenTables = [];
 
     if (this.props.tables) {
-      let tables = _.sortBy(this.props.tables, "display_name");
+      const tables = _.sortBy(this.props.tables, "display_name");
       _.each(tables, table => {
         const selected = this.props.tableId === table.id;
-        let row = (
+        const row = (
           <li key={table.id}>
             <a
-              className={cx("AdminList-item flex align-center no-decoration", {
-                selected,
-              })}
+              className={cx(
+                "AdminList-item flex align-center no-decoration text-wrap",
+                {
+                  selected,
+                },
+              )}
               onClick={this.props.selectTable.bind(null, table)}
             >
               {table.display_name}
             </a>
           </li>
         );
-        let regex = this.state.searchRegex;
+        const regex = this.state.searchRegex;
         if (
           !regex ||
           regex.test(table.display_name) ||

@@ -40,7 +40,7 @@ export default class Funnel extends Component {
     height: 4,
   };
 
-  static isSensible(cols, rows) {
+  static isSensible({ cols, rows }) {
     return cols.length === 2;
   }
 
@@ -65,6 +65,37 @@ export default class Funnel extends Component {
       );
     }
   }
+
+  // NOTE: currently expects multi-series
+  static placeholderSeries = [
+    ["Homepage", 1000],
+    ["Product Page", 850],
+    ["Tiers Page", 700],
+    ["Trial Form", 200],
+    ["Trial Confirmation", 40],
+  ].map(row => ({
+    card: {
+      display: "funnel",
+      visualization_settings: {
+        "funnel.type": "funnel",
+        "funnel.dimension": "Total Sessions",
+      },
+      dataset_query: { type: "null" },
+    },
+    data: {
+      rows: [row],
+      cols: [
+        {
+          name: "Total Sessions",
+          base_type: "type/Text",
+        },
+        {
+          name: "Sessions",
+          base_type: "type/Integer",
+        },
+      ],
+    },
+  }));
 
   static settings = {
     ...columnSettings({ hidden: true }),
@@ -99,7 +130,7 @@ export default class Funnel extends Component {
   };
 
   static transformSeries(series) {
-    let [
+    const [
       {
         card,
         data: { rows, cols },
@@ -166,12 +197,16 @@ export default class Funnel extends Component {
               actionButtons={actionButtons}
             />
           )}
-          <LegendHeader
-            className="flex-no-shrink"
-            series={series._raw || series}
-            actionButtons={!hasTitle && actionButtons}
-            onChangeCardAndRun={onChangeCardAndRun}
-          />
+          {!hasTitle &&
+          actionButtons && ( // always show action buttons if we have them
+              <LegendHeader
+                className="flex-no-shrink"
+                // $FlowFixMe
+                series={series._raw || series}
+                actionButtons={actionButtons}
+                onChangeCardAndRun={onChangeCardAndRun}
+              />
+            )}
           <FunnelNormal {...this.props} className="flex-full" />
         </div>
       );

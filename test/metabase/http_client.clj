@@ -2,13 +2,17 @@
   "HTTP client for making API calls against the Metabase API. For test/REPL purposes."
   (:require [cheshire.core :as json]
             [clj-http.client :as client]
-            [clojure.string :as str]
+            [clojure
+             [string :as str]
+             [test :as t]]
             [clojure.tools.logging :as log]
+            [java-time :as java-time]
             [metabase
              [config :as config]
              [util :as u]]
             [metabase.middleware.session :as mw.session]
-            [metabase.util.date :as du]
+            [metabase.test.initialize :as initialize]
+            [metabase.util.date-2 :as u.date]
             [schema.core :as s]))
 
 ;;; build-url
@@ -18,9 +22,9 @@
   (str "http://localhost:" (config/config-str :mb-jetty-port) "/api/"))
 
 (defn build-url
-  "Build an API URL for `localhost` and `MB_JETTY_PORT` with URL-PARAM-KWARGS.
+  "Build an API URL for `localhost` and `MB_JETTY_PORT` with `url-param-kwargs`.
 
-     (build-url \"db/1\" {:x true}) -> \"http://localhost:3000/api/db/1?x=true\""
+    (build-url \"db/1\" {:x true}) -> \"http://localhost:3000/api/db/1?x=true\""
   [url url-param-kwargs]
   {:pre [(string? url) (u/maybe? map? url-param-kwargs)]}
   (str *url-prefix* url (when (seq url-param-kwargs)
@@ -32,23 +36,41 @@
 
 ;;; parse-response
 
-(def ^:private ^:const auto-deserialize-dates-keys
+(def ^:private auto-deserialize-dates-keys
   #{:created_at :updated_at :last_login :date_joined :started_at :finished_at :last_analyzed})
 
 (defn- auto-deserialize-dates
-  "Automatically recurse over RESPONSE and look for keys that are known to correspond to dates.
-   Parse their values and convert to `java.sql.Timestamps`."
+  "Automatically recurse over `response` and look for keys that are known to correspond to dates. Parse their values and
+  convert to java temporal types."
   [response]
-  (cond (sequential? response) (map auto-deserialize-dates response)
-        (map? response) (->> response
-                             (map (fn [[k v]]
-                                    {k (cond
-                                         ;; Our tests only run in UTC, parsing timestamp strings as UTC
-                                         (contains? auto-deserialize-dates-keys k) (du/->Timestamp v du/utc)
-                                         (coll? v) (auto-deserialize-dates v)
-                                         :else v)}))
-                             (into {}))
-        :else response))
+  (cond (sequential? response)
+        (map auto-deserialize-dates response)
+
+        (map? response)
+        (->> response
+             (map (fn [[k v]]
+                    {k (cond
+                         ;; `u.date/parse` converts OffsetDateTimes with `Z` offset to
+                         ;; `ZonedDateTime` automatically (for better or worse) since this
+                         ;; won't match what's actually in the DB convert it back to an `OffsetDateTime`
+                         (contains? auto-deserialize-dates-keys k)
+                         (try
+                           (let [parsed (u.date/parse v)]
+                             (if (java-time/zoned-date-time? parsed)
+                               (java-time/offset-date-time parsed)
+                               parsed))
+                           (catch Throwable _
+                             v))
+
+                         (coll? v)
+                         (auto-deserialize-dates v)
+
+                         :else
+                         v)}))
+             (into {}))
+
+        :else
+        response))
 
 (defn- parse-response
   "Deserialize the JSON response or return as-is if that fails."
@@ -57,7 +79,7 @@
     body
     (try
       (auto-deserialize-dates (json/parse-string body keyword))
-      (catch Throwable _
+      (catch Throwable e
         (when-not (str/blank? body)
           body)))))
 
@@ -66,9 +88,9 @@
 
 (declare client)
 
-(s/defn authenticate
-  "Authenticate a test user with USERNAME and PASSWORD, returning their Metabase Session token;
-   or throw an Exception if that fails."
+(s/defn authenticate :- s/Str
+  "Authenticate a test user with `username` and `password`, returning their Metabase Session token; or throw an
+  Exception if that fails."
   [credentials :- {:username s/Str, :password s/Str}]
   (try
     (:id (client :post 200 "session" credentials))
@@ -91,17 +113,23 @@
      {:body (json/generate-string http-body)})))
 
 (defn- check-status-code
-  "If an EXPECTED-STATUS-CODE was passed to the client, check that the actual status code matches, or throw an exception."
+  "If an `expected-status-code` was passed to the client, check that the actual status code matches, or throw an
+  exception."
   [method-name url body expected-status-code actual-status-code]
+  (when (and (= actual-status-code 401)
+             (not= expected-status-code 401))
+    (let [message (format "%s %s expected a status code of %d, got %d."
+                          method-name url expected-status-code actual-status-code)
+          body    (try
+                    (json/parse-string body keyword)
+                    (catch Throwable _
+                      body))]
+      (throw (ex-info message {:status-code actual-status-code}))))
+  ;; all other status codes should be test assertions against the expected status code if one was specified
   (when expected-status-code
-    (when (not= actual-status-code expected-status-code)
-      (let [message (format "%s %s expected a status code of %d, got %d." method-name url expected-status-code actual-status-code)
-            body    (try
-                      (json/parse-string body keyword)
-                      (catch Throwable _
-                        body))]
-        (println (u/pprint-to-str 'red body))
-        (throw (ex-info message {:status-code actual-status-code}))))))
+    (t/is (= actual-status-code expected-status-code)
+          (format "%s %s expected a status code of %d, got %d."
+                  method-name url expected-status-code actual-status-code))))
 
 (def ^:private method->request-fn
   {:get    client/get
@@ -118,6 +146,7 @@
          (string? url)
          (u/maybe? map? http-body)
          (u/maybe? map? url-param-kwargs)]}
+  (initialize/initialize-if-needed! :db :web-server)
   (let [request-map (merge (build-request-map credentials http-body) request-options)
         request-fn  (method->request-fn method)
         url         (build-url url url-param-kwargs)
@@ -140,15 +169,18 @@
         [body [& {:as url-param-kwargs}]] (u/optional map? args)]
     [credentials method expected-status url body url-param-kwargs request-options]))
 
+(def ^:private response-timeout-ms (* 15 1000))
+
 (defn client-full-response
   "Identical to `client` except returns the full HTTP response map, not just the body of the response"
   {:arglists '([credentials? method expected-status-code? url request-options? http-body-map? & url-kwargs])}
   [& args]
-  (apply -client (parse-http-client-args args)))
+  (u/with-timeout response-timeout-ms
+    (apply -client (parse-http-client-args args))))
 
 (defn client
   "Perform an API call and return the response (for test purposes).
-   The first arg after URL will be passed as a JSON-encoded body if it is a map.
+   The first arg after `url` will be passed as a JSON-encoded body if it is a map.
    Other &rest kwargs will be passed as `GET` parameters.
 
   Examples:
@@ -159,13 +191,13 @@
 
   Args:
 
-   *  CREDENTIALS           Optional map of `:username` and `:password` or `X-METABASE-SESSION` token of a User who we
-                            should perform the request as
-   *  METHOD                `:get`, `:post`, `:delete`, or `:put`
-   *  EXPECTED-STATUS-CODE  When passed, throw an exception if the response has a different status code.
-   *  URL                   Base URL of the request, which will be appended to `*url-prefix*`. e.g. `card/1/favorite`
-   *  HTTP-BODY-MAP         Optional map to send a the JSON-serialized HTTP body of the request
-   *  URL-KWARGS            key-value pairs that will be encoded and added to the URL as GET params"
+   *  `credentials`          Optional map of `:username` and `:password` or `X-METABASE-SESSION` token of a User who we
+                             should perform the request as
+   *  `method`               `:get`, `:post`, `:delete`, or `:put`
+   *  `expected-status-code` When passed, throw an exception if the response has a different status code.
+   *  `url`                  Base URL of the request, which will be appended to `*url-prefix*`. e.g. `card/1/favorite`
+   *  `http-body-map`        Optional map to send a the JSON-serialized HTTP body of the request
+   *  `url-kwargs`           key-value pairs that will be encoded and added to the URL as GET params"
   {:arglists '([credentials? method expected-status-code? url request-options? http-body-map? & url-kwargs])}
   [& args]
   (:body (apply client-full-response args)))

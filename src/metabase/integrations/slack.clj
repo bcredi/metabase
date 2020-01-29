@@ -9,12 +9,12 @@
              [util :as u]]
             [metabase.models.setting :as setting :refer [defsetting]]
             [metabase.util
-             [i18n :refer [tru]]
+             [i18n :refer [deferred-tru]]
              [schema :as su]]
             [schema.core :as s]))
 
 ;; Define a setting which captures our Slack api token
-(defsetting slack-token (tru "Slack API bearer token obtained from https://api.slack.com/web#authentication"))
+(defsetting slack-token (deferred-tru "Slack API bearer token obtained from https://api.slack.com/web#authentication"))
 
 (def ^:private ^String slack-api-base-url "https://slack.com/api")
 (def ^:private ^String files-channel-name "metabase_files")
@@ -24,16 +24,16 @@
   []
   (boolean (seq (slack-token))))
 
-
 (defn- handle-response [{:keys [status body]}]
-  (let [body (-> body io/reader (json/parse-stream keyword))]
-    (if (and (= 200 status) (:ok body))
-      body
-      (let [error (if (= (:error body) "invalid_auth")
-                    {:errors {:slack-token "Invalid token"}}
-                    {:message (str "Slack API error: " (:error body)), :response body})]
-        (log/warn (u/pprint-to-str 'red error))
-        (throw (ex-info (:message error) error))))))
+  (with-open [reader (io/reader body)]
+    (let [body (json/parse-stream reader keyword)]
+      (if (and (= 200 status) (:ok body))
+        body
+        (let [error (if (= (:error body) "invalid_auth")
+                      {:errors {:slack-token "Invalid token"}}
+                      {:message (str "Slack API error: " (:error body)), :response body})]
+          (log/warn (u/pprint-to-str 'red error))
+          (throw (ex-info (:message error) error)))))))
 
 (defn- do-slack-request [request-fn params-key endpoint & {:keys [token], :as params, :or {token (slack-token)}}]
   (when token

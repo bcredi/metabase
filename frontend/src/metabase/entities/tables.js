@@ -8,6 +8,9 @@ import {
 } from "metabase/lib/redux";
 import _ from "underscore";
 
+import * as Urls from "metabase/lib/urls";
+import { color } from "metabase/lib/colors";
+
 import { createSelector } from "reselect";
 
 import { MetabaseApi } from "metabase/services";
@@ -69,7 +72,7 @@ const Tables = createEntity({
       withAction(FETCH_METADATA),
       withCachedDataAndRequestState(
         ({ id }) => [...Tables.getObjectStatePath(id)],
-        ({ id }) => [...Tables.getObjectStatePath(id), "fetch_query_metadata"],
+        ({ id }) => [...Tables.getObjectStatePath(id), "fetchMetadata"],
       ),
       withNormalize(TableSchema),
     )(({ id }) => async (dispatch, getState) => {
@@ -80,7 +83,7 @@ const Tables = createEntity({
     }),
 
     // like fetchMetadata but also loads tables linked by foreign key
-    fetchTableMetadata: createThunkAction(
+    fetchMetadataAndForeignTables: createThunkAction(
       FETCH_TABLE_METADATA,
       ({ id }, options) => async (dispatch, getState) => {
         await dispatch(Tables.actions.fetchMetadata({ id }, options));
@@ -98,7 +101,7 @@ const Tables = createEntity({
       withAction(FETCH_TABLE_FOREIGN_KEYS),
       withCachedDataAndRequestState(
         ({ id }) => [...Tables.getObjectStatePath(id)],
-        ({ id }) => [...Tables.getObjectStatePath(id), "fk"],
+        ({ id }) => [...Tables.getObjectStatePath(id), "fetchForeignKeys"],
       ),
       withNormalize(TableSchema),
     )(entityObject => async (dispatch, getState) => {
@@ -165,8 +168,16 @@ const Tables = createEntity({
 
     return state;
   },
+  objectSelectors: {
+    getUrl: table =>
+      Urls.tableRowsQuery(table.database_id, table.table_id, null),
+    getIcon: table => "table",
+    getColor: table => color("accent2"),
+  },
 
   selectors: {
+    getObject: (state, { entityId }) => getMetadata(state).table(entityId),
+
     getTable: createSelector(
       // we wrap getMetadata to handle a circular dep issue
       [state => getMetadata(state), (state, props) => props.entityId],

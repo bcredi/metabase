@@ -1,9 +1,9 @@
 import React, { Component } from "react";
 import PropTypes from "prop-types";
 
-import RevisionDiff from "./RevisionDiff.jsx";
+import RevisionDiff from "./RevisionDiff";
 import { t } from "ttag";
-import UserAvatar from "metabase/components/UserAvatar.jsx";
+import UserAvatar from "metabase/components/UserAvatar";
 
 import moment from "moment";
 moment.locale("en");
@@ -32,7 +32,7 @@ export default class Revision extends Component {
     if (revision.is_reversion) {
       return t`reverted to a previous version`;
     }
-    let changedKeys = Object.keys(revision.diff);
+    const changedKeys = Object.keys(revision.diff);
     if (changedKeys.length === 1) {
       switch (changedKeys[0]) {
         case "name":

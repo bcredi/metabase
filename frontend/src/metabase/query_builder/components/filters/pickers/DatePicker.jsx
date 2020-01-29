@@ -13,7 +13,7 @@ import DateOperatorSelector from "../DateOperatorSelector";
 import DateUnitSelector from "../DateUnitSelector";
 import Calendar from "metabase/components/Calendar";
 
-import Query from "metabase/lib/query";
+import * as Q_DEPRECATED from "metabase/lib/query";
 
 moment.locale("en");
 moment().isoWeekday(1);
@@ -33,26 +33,27 @@ import type {
 } from "metabase/meta/types/Query";
 
 const SingleDatePicker = ({
+  className,
   filter: [op, field, value],
   onFilterChange,
   hideTimeSelectors,
 }) => (
-  <div className="mx2">
-    <SpecificDatePicker
-      value={value}
-      onChange={value => onFilterChange([op, field, value])}
-      hideTimeSelectors={hideTimeSelectors}
-      calendar
-    />
-  </div>
+  <SpecificDatePicker
+    className={className}
+    value={value}
+    onChange={value => onFilterChange([op, field, value])}
+    hideTimeSelectors={hideTimeSelectors}
+    calendar
+  />
 );
 
 const MultiDatePicker = ({
+  className,
   filter: [op, field, startValue, endValue],
   onFilterChange,
   hideTimeSelectors,
 }) => (
-  <div className="mx2 mb1">
+  <div className={className}>
     <div className="Grid Grid--1of2 Grid--gutters">
       <div className="Grid-cell">
         <SpecificDatePicker
@@ -77,7 +78,6 @@ const MultiDatePicker = ({
         onChange={(startValue, endValue) =>
           onFilterChange([op, field, startValue, endValue])
         }
-        isDual
       />
     </div>
   </div>
@@ -96,6 +96,7 @@ NextPicker.horizontalLayout = true;
 type CurrentPickerProps = {
   filter: TimeIntervalFilter,
   onFilterChange: (filter: TimeIntervalFilter) => void,
+  className?: string,
 };
 
 type CurrentPickerState = {
@@ -114,25 +115,23 @@ class CurrentPicker extends Component {
 
   render() {
     const {
+      className,
       filter: [operator, field, intervals, unit],
       onFilterChange,
     } = this.props;
     return (
-      <div className="flex-full mr2 mb2">
-        <DateUnitSelector
-          value={unit}
-          open={this.state.showUnits}
-          onChange={value => {
-            onFilterChange([operator, field, intervals, value]);
-            this.setState({ showUnits: false });
-          }}
-          togglePicker={() =>
-            this.setState({ showUnits: !this.state.showUnits })
-          }
-          formatter={val => val}
-          periods={DATE_PERIODS}
-        />
-      </div>
+      <DateUnitSelector
+        className={className}
+        value={unit}
+        open={this.state.showUnits}
+        onChange={value => {
+          onFilterChange([operator, field, intervals, value]);
+          this.setState({ showUnits: false });
+        }}
+        togglePicker={() => this.setState({ showUnits: !this.state.showUnits })}
+        formatter={val => val}
+        periods={DATE_PERIODS}
+      />
     );
   }
 }
@@ -158,7 +157,7 @@ function getDateTimeField(
   field: ConcreteField,
   bucketing: ?DatetimeUnit,
 ): ConcreteField {
-  let target = getDateTimeFieldTarget(field);
+  const target = getDateTimeFieldTarget(field);
   if (bucketing) {
     // $FlowFixMe
     return ["datetime-field", target, bucketing];
@@ -170,7 +169,7 @@ function getDateTimeField(
 export function getDateTimeFieldTarget(
   field: ConcreteField,
 ): LocalFieldReference | ForeignFieldReference | ExpressionReference {
-  if (Query.isDatetimeField(field)) {
+  if (Q_DEPRECATED.isDatetimeField(field)) {
     // $FlowFixMe:
     return (field[1]: // $FlowFixMe:
     LocalFieldReference | ForeignFieldReference | ExpressionReference);
@@ -364,7 +363,7 @@ export default class DatePicker extends Component {
   }
 
   render() {
-    const { filter, onFilterChange, includeAllTime } = this.props;
+    const { filter, onFilterChange, includeAllTime, className } = this.props;
     let { operators } = this.state;
     if (includeAllTime) {
       operators = [ALL_TIME_OPERATOR, ...operators];
@@ -376,12 +375,16 @@ export default class DatePicker extends Component {
     return (
       <div
         // apply flex to align the operator selector and the "Widget" if necessary
-        className={cx("border-top pt2", {
+        className={cx(className, {
           "flex align-center": Widget && Widget.horizontalLayout,
         })}
-        style={{ minWidth: 380 }}
+        style={{ minWidth: 300 }}
       >
         <DateOperatorSelector
+          className={cx({
+            mr2: Widget && Widget.horizontalLayout,
+            mb2: Widget && !Widget.horizontalLayout,
+          })}
           operator={operator && operator.name}
           operators={operators}
           onOperatorChange={operator => onFilterChange(operator.init(filter))}
@@ -389,6 +392,7 @@ export default class DatePicker extends Component {
         {Widget && (
           <Widget
             {...this.props}
+            className="flex-full"
             filter={filter}
             hideHoursAndMinutes={this.props.hideTimeSelectors}
             onFilterChange={filter => {

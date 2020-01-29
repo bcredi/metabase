@@ -16,6 +16,8 @@ import { defer } from "metabase/lib/promise";
 import { debounce } from "underscore";
 import { stripId } from "metabase/lib/formatting";
 
+import Fields from "metabase/entities/fields";
+
 import type Field from "metabase-lib/lib/metadata/Field";
 import type { FieldId } from "metabase/meta/types/Field";
 import type { Value } from "metabase/meta/types/Dataset";
@@ -28,6 +30,13 @@ const mapDispatchToProps = {
   addRemappings,
   fetchFieldValues,
 };
+
+function mapStateToProps(state, { field }) {
+  const selectedField =
+    field && Fields.selectors.getObject(state, { entityId: field.id });
+  // try and use the selected field, but fall back to the one passed
+  return { field: selectedField || field };
+}
 
 type Props = {
   value: Value[],
@@ -44,7 +53,10 @@ type Props = {
   formatOptions?: FormattingOptions,
   maxWidth?: number,
   minWidth?: number,
+  optionsMaxHeight?: Number,
   alwaysShowOptions?: boolean,
+
+  className?: string,
 };
 
 type State = {
@@ -118,7 +130,7 @@ export class FieldValuesWidget extends Component {
 
     const fieldId = (field.target || field).id;
     const searchFieldId = searchField.id;
-    let results = await MetabaseApi.field_search(
+    const results = await MetabaseApi.field_search(
       {
         value,
         fieldId,
@@ -172,7 +184,7 @@ export class FieldValuesWidget extends Component {
       cancelDeferred.resolve();
     };
 
-    let results = await this.search(value, cancelDeferred.promise);
+    const results = await this.search(value, cancelDeferred.promise);
 
     this._cancel = null;
 
@@ -224,7 +236,10 @@ export class FieldValuesWidget extends Component {
       multi,
       autoFocus,
       color,
+      className,
+      style,
       formatOptions,
+      optionsMaxHeight,
     } = this.props;
     const { loadingState } = this.state;
 
@@ -271,14 +286,19 @@ export class FieldValuesWidget extends Component {
           value={value.filter(v => v != null)}
           onChange={onChange}
           placeholder={placeholder}
+          updateOnInputChange
+          // forwarded props
           multi={multi}
           autoFocus={autoFocus}
           color={color}
-          style={{
-            borderWidth: 2,
-            ...this.props.style,
-          }}
-          updateOnInputChange
+          style={style}
+          className={className}
+          optionsStyle={
+            optionsMaxHeight !== undefined
+              ? { maxHeight: optionsMaxHeight }
+              : {}
+          }
+          // end forwarded props
           options={options}
           // $FlowFixMe
           valueKey={0}
@@ -369,6 +389,6 @@ const OptionsMessage = ({ message }) => (
 );
 
 export default connect(
-  null,
+  mapStateToProps,
   mapDispatchToProps,
 )(FieldValuesWidget);

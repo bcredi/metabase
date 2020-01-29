@@ -15,6 +15,9 @@
 
 (driver/register! :googleanalytics, :parent :google)
 
+(defmethod driver/supports? [:googleanalytics :basic-aggregations] [_ _] false)
+
+
 ;;; ----------------------------------------------------- Client -----------------------------------------------------
 
 (defn- ^Analytics credential->client [^GoogleCredential credential]
@@ -39,7 +42,7 @@
   (google/execute (.list (.profiles (.management client)) account-id property-id)))
 
 (defn- properties+profiles
-  "Return a set of tuples of `Webproperty` and `Profile` for DATABASE."
+  "Return a set of tuples of `Webproperty` and `Profile` for `database`."
   [{{:keys [account-id]} :details, :as database}]
   (let [client (database->client database)]
     (set (for [^Webproperty property (.getItems (fetch-properties client account-id))
@@ -85,7 +88,7 @@
   (google/execute (.list (.columns (.metadata client)) "ga")))
 
 (defn- column-attribute
-  "Get the value of ATTRIBUTE-NAME for COLUMN."
+  "Get the value of `attribute-name` for `column`."
   [^Column column, attribute-name]
   (get (.getAttributes column) (name attribute-name)))
 
@@ -191,7 +194,8 @@
 (defn- add-built-in-column-metadata [query results]
   (update-in results [:data :cols] (partial map (partial add-col-metadata query))))
 
-(defmethod driver/process-query-in-context :googleanalytics [_ qp]
+(defmethod driver/process-query-in-context :googleanalytics
+  [_ qp]
   (fn [query]
     (let [results (qp query)]
       (add-built-in-column-metadata query results))))
@@ -201,6 +205,7 @@
                  (json/parse-string query keyword)
                  query)
         client (database->client database)]
+    ;; `end-date` is inclusive!!!
     (u/prog1 (.get (.ga (.data client))
                    (:ids query)
                    (:start-date query)
@@ -226,8 +231,8 @@
   ;; if we get a big long message about how we need to enable the GA API, then replace it with a short message about
   ;; how we need to enable the API
   (if-let [[_ enable-api-url] (re-find #"Enable it by visiting ([^\s]+) then retry." message)]
-    (str (tru "You must enable the Google Analytics API. Use this link to go to the Google Developers Console: {0}"
-              enable-api-url))
+    (tru "You must enable the Google Analytics API. Use this link to go to the Google Developers Console: {0}"
+         enable-api-url)
     message))
 
 (defmethod driver/mbql->native :googleanalytics [_ query]

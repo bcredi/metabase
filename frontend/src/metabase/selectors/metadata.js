@@ -18,9 +18,8 @@ import { shallowEqual } from "recompose";
 import { getFieldValues, getRemappings } from "metabase/lib/query/field";
 
 import {
-  getOperators,
-  getBreakouts,
-  getAggregatorsWithFields,
+  getFilterOperators,
+  getAggregationOperatorsWithFields,
 } from "metabase/lib/schema_metadata";
 import { getIn } from "icepick";
 
@@ -30,9 +29,6 @@ export const getNormalizedTables = state => state.entities.tables;
 export const getNormalizedFields = state => state.entities.fields;
 export const getNormalizedMetrics = state => state.entities.metrics;
 export const getNormalizedSegments = state => state.entities.segments;
-
-export const getMetadataFetched = state =>
-  state.requests.fetched.metadata || {};
 
 // TODO: these should be denomalized but non-cylical, and only to the same "depth" previous "tableMetadata" was, e.x.
 //
@@ -59,6 +55,7 @@ export const getShallowMetrics = getNormalizedMetrics;
 export const getShallowSegments = getNormalizedSegments;
 
 // fully connected graph of all databases, tables, fields, segments, and metrics
+// TODO: do this lazily using ES6 Proxies
 export const getMetadata = createSelector(
   [
     getNormalizedDatabases,
@@ -97,18 +94,20 @@ export const getMetadata = createSelector(
       }
     });
 
-    hydrate(meta.fields, "operators", f => getOperators(f, f.table));
-    hydrate(meta.tables, "aggregation_options", t =>
-      getAggregatorsWithFields(t),
+    hydrate(meta.fields, "filter_operators", f =>
+      getFilterOperators(f, f.table),
     );
-    hydrate(meta.tables, "breakout_options", t => getBreakouts(t.fields));
+    hydrate(meta.tables, "aggregation_operators", t =>
+      getAggregationOperatorsWithFields(t),
+    );
 
     hydrate(meta.fields, "values", f => getFieldValues(f));
     hydrate(meta.fields, "remapping", f => new Map(getRemappings(f)));
 
     hydrateLookup(meta.databases, "tables", "id");
     hydrateLookup(meta.tables, "fields", "id");
-    hydrateLookup(meta.fields, "operators", "name");
+    hydrateLookup(meta.fields, "filter_operators", "name");
+    hydrateLookup(meta.tables, "aggregation_operators", "short");
 
     return meta;
   },
@@ -225,7 +224,7 @@ export const makeGetMergedParameterFieldValues = () => {
 
 // clone each object in the provided mapping of objects
 export function copyObjects(metadata, objects, Klass) {
-  let copies = {};
+  const copies = {};
   for (const object of Object.values(objects)) {
     if (object && object.id != null) {
       // $FlowFixMe
@@ -257,7 +256,7 @@ function hydrateList(objects, property, targetObjects) {
 // creates a *_lookup object for a previously hydrated list
 function hydrateLookup(objects, property, idProperty = "id") {
   hydrate(objects, property + "_lookup", object => {
-    let lookup = {};
+    const lookup = {};
     for (const item of object[property] || []) {
       lookup[item[idProperty]] = item;
     }

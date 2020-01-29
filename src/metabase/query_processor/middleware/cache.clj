@@ -21,9 +21,7 @@
             [metabase.plugins.classloader :as classloader]
             [metabase.query-processor.middleware.cache-backend.interface :as i]
             [metabase.query-processor.util :as qputil]
-            [metabase.util
-             [date :as du]
-             [i18n :refer [trs]]]))
+            [metabase.util.i18n :refer [trs]]))
 
 ;; TODO - Why not make this an option in the query itself? :confused:
 (def ^:dynamic ^Boolean *ignore-cached-results*
@@ -44,12 +42,13 @@
   ;; to no longer satisfy the protocol
   ([backend-ns-symb]
    (get-backend-instance-in-namespace backend-ns-symb :allow-reload))
+
   ([backend-ns-symb allow-reload?]
    (let [varr (ns-resolve backend-ns-symb 'instance)]
      (cond
        (not varr)             (throw (Exception. (str "No var named 'instance' found in namespace " backend-ns-symb)))
        (valid-backend? @varr) @varr
-       allow-reload?          (do (require backend-ns-symb :reload)
+       allow-reload?          (do (classloader/require backend-ns-symb :reload)
                                   (get-backend-instance-in-namespace backend-ns-symb false))
        :else                  (throw (Exception. (format "%s/instance doesn't satisfy IQueryProcessorCacheBackend"
                                                          backend-ns-symb)))))))
@@ -63,9 +62,8 @@
    (resolve-backend (config/config-kw :mb-qp-cache-backend)))
 
   ([backend]
-   (classloader/the-classloader)
    (let [backend-ns-symb (symbol (str "metabase.query-processor.middleware.cache-backend." (munge (name backend))))]
-     (require backend-ns-symb)
+     (classloader/require backend-ns-symb)
      (log/info (trs "Using query processor cache backend: {0}" (u/format-color 'blue backend)) (u/emoji "💾"))
      (get-backend-instance-in-namespace backend-ns-symb))))
 
@@ -78,7 +76,7 @@
 (defn- cached-results [query-hash max-age-seconds]
   (when-not *ignore-cached-results*
     (when-let [results (i/cached-results @backend-instance query-hash max-age-seconds)]
-      (assert (du/is-temporal? (:updated_at results))
+      (assert (instance? java.time.temporal.Temporal (:updated_at results))
         "cached-results should include an `:updated_at` field containing the date when the query was last ran.")
       (log/info "Returning cached results for query" (u/emoji "💾"))
       (assoc results :cached true))))

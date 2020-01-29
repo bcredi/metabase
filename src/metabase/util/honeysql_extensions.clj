@@ -1,20 +1,17 @@
 (ns metabase.util.honeysql-extensions
   (:refer-clojure :exclude [+ - / * mod inc dec cast concat format])
-  (:require [clojure.string :as str]
+  (:require [clojure
+             [pprint :as pprint]
+             [string :as str]]
             [honeysql
              [core :as hsql]
              [format :as hformat]]
-            [metabase
-             [config :as config]
-             [util :as u]]
-            [metabase.util.pretty :refer [PrettyPrintable]]
+            [metabase.util :as u]
+            [potemkin.types :as p.types]
+            [pretty.core :as pretty :refer [PrettyPrintable]]
             [schema.core :as s])
   (:import honeysql.format.ToSql
            java.util.Locale))
-
-(when config/is-dev?
-  (alter-meta! #'honeysql.core/format assoc :style/indent 1)
-  (alter-meta! #'honeysql.core/call   assoc :style/indent 1))
 
 (defn- english-upper-case
   "Use this function when you need to upper-case an identifier or table name. Similar to `clojure.string/upper-case`
@@ -70,8 +67,7 @@
    :field          ; is `my_field`
    :field-alias))  ; is `f`
 
-(defrecord Identifier [identifier-type components]
-  :load-ns true
+(p.types/defrecord+ Identifier [identifier-type components]
   ToSql
   (to-sql [_]
     (binding [hformat/*allow-dashed-names?* true]
@@ -84,9 +80,8 @@
     (cons 'identifier (cons identifier-type components))))
 
 ;; don't use `->Identifier` or `map->Identifier`. Use the `identifier` function instead, which cleans up its input
-(when-not config/is-prod?
-  (alter-meta! #'->Identifier    assoc :private true)
-  (alter-meta! #'map->Identifier assoc :private true))
+(alter-meta! #'->Identifier    assoc :private true)
+(alter-meta! #'map->Identifier assoc :private true)
 
 (s/defn identifier :- Identifier
   "Define an identifer of type with `components`. Prefer this to using keywords for identifiers, as those do not
@@ -105,11 +100,10 @@
                      (:components component)
                      [component])
          :when     (some? component)]
-     (u/keyword->qualified-name component))))
+     (u/qualified-name component))))
 
 ;; Single-quoted string literal
-(defrecord Literal [literal]
-  :load-ns true
+(p.types/defrecord+ Literal [literal]
   ToSql
   (to-sql [_]
     (as-> literal <>
@@ -120,9 +114,8 @@
     (list 'literal literal)))
 
 ;; as with `Identifier` you should use the the `literal` function below instead of the auto-generated factory functions.
-(when-not config/is-prod?
-  (alter-meta! #'->Literal    assoc :private true)
-  (alter-meta! #'map->Literal assoc :private true))
+(alter-meta! #'->Literal    assoc :private true)
+(alter-meta! #'map->Literal assoc :private true)
 
 (defn literal
   "Wrap keyword or string `s` in single quotes and a HoneySQL `raw` form.
@@ -131,7 +124,7 @@
   this won't handle wacky cases like three single quotes in a row. Don't use `literal` for things that might be wacky.
   Only use it for things that are hardcoded."
   [s]
-  (Literal. (u/keyword->qualified-name s)))
+  (Literal. (u/qualified-name s)))
 
 
 (def ^{:arglists '([& exprs])}  +  "Math operator. Interpose `+` between `exprs` and wrap in parentheses." (partial hsql/call :+))
@@ -185,3 +178,22 @@
 (def ^{:arglists '([& exprs])} quarter "SQL `quarter` function."(partial hsql/call :quarter))
 (def ^{:arglists '([& exprs])} year    "SQL `year` function."   (partial hsql/call :year))
 (def ^{:arglists '([& exprs])} concat  "SQL `concat` function." (partial hsql/call :concat))
+
+;; Etc (Dev Stuff)
+(alter-meta! #'honeysql.core/format assoc :style/indent 1)
+(alter-meta! #'honeysql.core/call   assoc :style/indent 1)
+
+(require 'honeysql.types)
+(extend-protocol PrettyPrintable
+  honeysql.types.SqlCall
+  (pretty [{fn-name :name, args :args, :as this}]
+    (with-meta (apply list 'hsql/call fn-name args)
+      (meta this))))
+
+(defmethod print-method honeysql.types.SqlCall
+  [call writer]
+  (print-method (pretty/pretty call) writer))
+
+(defmethod clojure.pprint/simple-dispatch honeysql.types.SqlCall
+  [call]
+  (clojure.pprint/write-out (pretty/pretty call)))

@@ -1,11 +1,11 @@
 import React, { Component } from "react";
 import PropTypes from "prop-types";
 
-import MetricsList from "./MetricsList.jsx";
-import ColumnsList from "./ColumnsList.jsx";
-import SegmentsList from "./SegmentsList.jsx";
+import MetricsList from "./MetricsList";
+import ColumnsList from "./ColumnsList";
+import SegmentsList from "./SegmentsList";
 import { t } from "ttag";
-import InputBlurChange from "metabase/components/InputBlurChange.jsx";
+import InputBlurChange from "metabase/components/InputBlurChange";
 import Databases from "metabase/entities/databases";
 import Tables from "metabase/entities/tables";
 import withTableMetadataLoaded from "metabase/admin/datamodel/withTableMetadataLoaded";
@@ -73,7 +73,7 @@ export default class MetadataTable extends Component {
   }
 
   renderVisibilityType(text, type, any) {
-    let classes = cx(
+    const classes = cx(
       "mx1",
       "text-bold",
       "text-brand-hover",
@@ -126,12 +126,14 @@ export default class MetadataTable extends Component {
         <div className="MetadataTable-title flex flex-column bordered rounded">
           <InputBlurChange
             className="AdminInput TableEditor-table-name text-bold border-bottom rounded-top"
+            name="display_name"
             type="text"
             value={table.display_name || ""}
             onBlurChange={this.onNameChange}
           />
           <InputBlurChange
             className="AdminInput TableEditor-table-description rounded-bottom"
+            name="description"
             type="text"
             value={table.description || ""}
             onBlurChange={this.onDescriptionChange}
